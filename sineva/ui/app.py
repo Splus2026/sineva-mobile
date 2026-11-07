@@ -112,7 +112,8 @@ class SelectableText(Label):
         self._anchor = None
         self.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
         self.bind(texture_size=self._on_texture)
-        self.bind(pos=lambda *_: self._redraw(), size=lambda *_: self._redraw())
+        self._rects = []
+        self.bind(pos=lambda *_: self._move_rects(), size=lambda *_: self._redraw())
         self._refresh()
 
     # --- разметка и подложки
@@ -131,7 +132,10 @@ class SelectableText(Label):
         self._redraw()
 
     def _redraw(self):
+        """Прямоугольники подложки пересоздаются только при смене текста/размера; при прокрутке (смене pos)
+           они лишь сдвигаются — иначе на телефоне каждый кадр прокрутки перестраивал бы все карточки."""
         self.canvas.before.clear()
+        self._rects = []
         ts = self.texture_size
         if not ts[1]:
             return
@@ -152,7 +156,12 @@ class SelectableText(Label):
                     continue
                 Color(*color)
                 for x1, y1, x2, y2 in boxes:
-                    Rectangle(pos=(ox + x1, oy - y2), size=(x2 - x1, y2 - y1))
+                    r = Rectangle(pos=(ox + x1, oy - y2), size=(x2 - x1, y2 - y1))
+                    self._rects.append((r, ox + x1 - self.x, oy - y2 - self.y))
+
+    def _move_rects(self):
+        for r, dx, dy in self._rects:
+            r.pos = (self.x + dx, self.y + dy)
 
     def _hit(self, pos):
         ts = self.texture_size
@@ -307,6 +316,18 @@ class SearchScreen(Screen):
         key = c['key']
         box.add_widget(head)
         box.add_widget(body)
+        if c.get('paging'):
+            pg = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+            prev = Button(text='← Назад', disabled=not c['paging']['prev'], background_normal='',
+                          background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+            nxt = Button(text='Дальше →', disabled=not c['paging']['next'], background_normal='',
+                         background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+            prev.bind(on_release=lambda *_: self.ctl.shift_card(key, -1))
+            nxt.bind(on_release=lambda *_: self.ctl.shift_card(key, 1))
+            pg.add_widget(prev)
+            pg.add_widget(mlabel(c['paging']['info'], font_size=sp(12)))
+            pg.add_widget(nxt)
+            box.add_widget(pg)
         if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
                           background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)

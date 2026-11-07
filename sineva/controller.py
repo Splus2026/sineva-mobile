@@ -42,6 +42,7 @@ class Controller:
         self.query = ''
         self.outcome = SearchOutcome()
         self.shown = 0
+        self.offsets = {}                       # ключ топика -> с какого символа показывается окно длинного текста
         self.expanded = set()                   # ключи раскрытых (полный текст) топиков
         self.selected = self._load_selected()
         self._token = 0
@@ -198,6 +199,7 @@ class Controller:
         self.outcome = outcome
         self.shown = self.config.get_int('page_size', 20)
         self.expanded.clear()
+        self.offsets.clear()
         self._publish()
         visible = len(self.search.visible(outcome))
         if outcome.errors and not outcome.results:
@@ -219,19 +221,69 @@ class Controller:
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
 
-    def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
+    MAX_CHARS = 2500          # длиннее — показываем окном: огромная текстура на телефоне даёт чёрные прямоугольники и тормоза
+
+    def _view(self, key: str, item: dict, brief: bool):
+        """(текст на экране, интервалы подсветки, карта кусков, постраничность) для топика."""
         content = item['content']
         exact, frags = self.search.highlight_spec(self.outcome, item)
         if brief:
             text, hl, segments = build_brief_view_mapped(content, exact, frags)
+            return text, hl, segments, None
+        hl = get_intervals(content, exact, frags)
+        n = len(content)
+        if n <= self.MAX_CHARS:
+            return content, hl, [(0, 0, n)], None
+        start = self.offsets.get(key)
+        if start is None:                                   # сначала — окно вокруг первого совпадения
+            start = max(0, (hl[0][0] if hl else 0) - 300)
+            start = self._snap(content, start)
+            self.offsets[key] = start
+        end = min(n, start + self.MAX_CHARS)
+        if end < n:
+            cut = max(content.rfind('\n', start, end), content.rfind(' ', start, end))
+            if cut > start + self.MAX_CHARS // 2:
+                end = cut
+        prefix = '… ' if start > 0 else ''
+        suffix = ' …' if end < n else ''
+        shift = len(prefix) - start
+        shown = [(max(s_, start) + shift, min(e_, end) + shift, p_) for s_, e_, p_ in hl if e_ > start and s_ < end]
+        text = prefix + content[start:end] + suffix
+        paging = {'prev': start > 0, 'next': end < n, 'info': f"{start + 1}–{end} из {n} зн."}
+        return text, shown, [(len(prefix), start, end - start)], paging
+
+    @staticmethod
+    def _snap(content: str, pos: int) -> int:
+        """Сдвигает начало окна назад к границе строки или слова, чтобы не рвать слово."""
+        if pos <= 0:
+            return 0
+        cut = max(content.rfind('\n', max(0, pos - 200), pos), content.rfind(' ', max(0, pos - 200), pos))
+        return cut + 1 if cut >= 0 else pos
+
+    def shift_card(self, key: str, direction: int) -> None:
+        """Длинный топик читается окнами: «Дальше» / «Назад»."""
+        item = self._find_item(key)
+        if item is None:
+            return
+        _t, _h, segs, paging = self._view(key, item, False)
+        if not paging:
+            return
+        _d0, c0, length = segs[0]
+        if direction > 0:
+            self.offsets[key] = self._snap(item['content'], c0 + length - 200)
         else:
-            text, hl, segments = content, get_intervals(content, exact, frags), [(0, 0, len(content))]
+            self.offsets[key] = self._snap(item['content'], max(0, c0 - self.MAX_CHARS + 200))
+        self._publish()
+
+    def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
+        content = item['content']
+        text, hl, segments, paging = self._view(key, item, brief)
         spans = []
         for _m, cs, ce in marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(item['book']))):
             spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
         return {'key': key, 'book': item['book'], 'header': self.search.header_markup(item, i + 1),
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': sorted(spans), 'segments': segments,
-                'expanded': expanded, 'source': self._source_label(item['book'])}
+                'expanded': expanded, 'paging': paging, 'source': self._source_label(item['book'])}
 
     def _source_label(self, file_name: str) -> str:
         book = self.library.find(file_name)
@@ -246,10 +298,7 @@ class Controller:
 
     def _segments(self, key: str, item: dict):
         brief = self.config.get_bool('brief_view', False) and key not in self.expanded
-        if brief:
-            exact, frags = self.search.highlight_spec(self.outcome, item)
-            return build_brief_view_mapped(item['content'], exact, frags)[2]
-        return [(0, 0, len(item['content']))]
+        return self._view(key, item, brief)[2]
 
     def _content_pieces(self, key: str, ds: int, de: int):
         item = self._find_item(key)

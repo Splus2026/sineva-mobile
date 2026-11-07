@@ -247,6 +247,25 @@ try:
     check('снятие со всего', ctl.marks.all_marks() == [])
     check('экспорт без отметок -> None', ctl.export_marks('txt') is None)
 
+    # ---------- длинные топики окнами ----------
+    big_book = os.path.join(paths.books_dir, 'Длинная.txt')
+    open(big_book, 'w', encoding='utf-8').write('1 ' + ' '.join(f'слово{i}' for i in range(3000)) + ' редкаяфраза в конце ' + ' '.join(f'хвост{i}' for i in range(500)) + '\n')
+    ctl.library.scan(); ctl.library.update_book_settings(ctl.library.find('Длинная.txt'), 'Длинная', 'Numeric')
+    ctl.index_books(['Длинная.txt'])
+    ctl.config.set('page_size', 50)
+    ctl.submit_query('редкаяфраза')
+    lc = [c for c in got['cards'] if c['key'].startswith('Длинная.txt')][0]
+    check('длинный топик показан окном', len(lc['text']) <= ctl.MAX_CHARS + 10 and lc['paging'] and lc['paging']['next'], str(len(lc['text'])))
+    check('окно содержит совпадение и подсветку', 'редкаяфраза' in lc['text'] and lc['hl'])
+    ctl.shift_card(lc['key'], 1)
+    lc2 = [c for c in got['cards'] if c['key'].startswith('Длинная.txt')][0]
+    check('«Дальше» двигает окно', lc2['text'] != lc['text'])
+    ctl.shift_card(lc['key'], -1)
+    ctl.mark_selection(lc['key'], lc['text'].index('редкаяфраза'), lc['text'].index('редкаяфраза') + 11, publish=False)
+    lc3 = ctl.card_marks(lc['key'])
+    check('подчёркивание в окне длинного топика', lc3 and lc['text'][lc3[0][0]:lc3[0][1]].strip().startswith('редкаяфраза'), str(lc3))
+    ctl.unmark_selection(lc['key'], 0, len(lc['text']))
+
     # ---------- «Дополнить» ----------
     check('цель не задана', ctl.append_target() == '')
     ok = ctl.append_to_book('Грани.txt', '3 Добавленный текст про море.')
