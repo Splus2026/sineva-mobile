@@ -20,7 +20,11 @@ class AppPaths:
         self.index_dir = os.path.join(root, 'indices')
         self.config_path = os.path.join(root, 'mconfig.ini')
         self.vector_dir = os.path.join(root, 'vector_models')
-        for d in (self.root, self.books_dir, self.index_dir, self.vector_dir):
+        self.marks_db = os.path.join(root, 'marks.db')              # подчёркнутое (как marks.db на ПК)
+        self.exports_dir = os.path.join(root, 'exports')            # файлы для «поделиться»
+        self.conspect_path = os.path.join(self.books_dir, '0_Конспект.txt')   # как DB\\0_Конспект.txt на ПК
+        self.diary_path = os.path.join(self.books_dir, 'dnev.txt')   # дневник: обычная книга в папке книг
+        for d in (self.root, self.books_dir, self.index_dir, self.vector_dir, self.exports_dir):
             os.makedirs(d, exist_ok=True)
 
     @staticmethod

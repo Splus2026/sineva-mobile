@@ -59,7 +59,7 @@ class SearchService:
             idx = None
             try:
                 idx = BookIndex(book.index_path)
-                for item in idx.search(out.words_info, limit):
+                for item in idx.search(out.words_info, limit, cancelled):
                     item['book'] = book.file_name
                     item['book_display'] = book.display
                     out.results.append(item)

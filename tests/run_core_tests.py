@@ -74,7 +74,7 @@ try:
     c = AppConfig(ini)
     check('Bases: алиас+разделитель', c.base_for('bibl.txt') == ('Библия', 'N700', ''))
     check('Bases: третье поле', c.base_for('Номенклатура.xlsx')[2] == 'строка')
-    check('Settings читаются', c.get_int('search_delay_ms', 0) == 250 and c.get_int('page_size', 0) == 20)
+    check('Settings читаются', c.get_int('search_delay_ms', 0) == 250 and c.get_int('page_size', 0) == 10)
     c.set_base('x.txt', 'Икс', 'Numeric'); c.save()
     c2 = AppConfig(ini)
     check('сохранение сохраняет чужие разделы', c2._parser.has_section('Engine') and c2._parser.has_section('VectorModels'))
@@ -179,57 +179,94 @@ try:
     check('поиск не падает', out_e is not None)
 
     # ---------- контроллер ----------
-    class FakeTimer:
-        def __init__(self, fn): self.fn, self.cancelled = fn, False
-        def cancel(self): self.cancelled = True
-        def fire(self):
-            if not self.cancelled: self.fn()
-    timers = []
-    ctl = Controller(paths, schedule=lambda fn, d: timers.append(FakeTimer(fn)) or timers[-1], run_async=False)
+    ctl = Controller(paths, run_async=False)
     got = {'cards': None, 'words': None, 'status': '', 'books': None}
     ctl.on_cards = lambda cards, total, more: got.update(cards=cards, total=total, more=more)
     ctl.on_words = lambda rows: got.update(words=rows)
     ctl.on_status = lambda s: got.update(status=s)
     ctl.on_books = lambda rows: got.update(books=rows)
-    ctl.on_query_changed('до')
-    check('короче 3 знаков — поиска нет, список пуст', got['cards'] == [] and not timers)
-    ctl.on_query_changed('дове')
-    check('без выбранных книг подсказка', 'Выберите книги' in got['status'] or not ctl.selected_books() is False)
     ctl.toggle_book('bibl.txt'); ctl.toggle_book('Грани.txt')
-    ctl.on_query_changed('дове'); ctl.on_query_changed('довер')
-    check('предыдущий таймер отменён, остался последний', timers[-2].cancelled and not timers[-1].cancelled)
-    timers[-1].fire()
-    check('динамический поиск выдал карточки', got['cards'] and got['total'] >= 2, str(got['status']))
+    ctl.on_query_changed('довер')
+    check('ввод текста поиск не запускает', got['cards'] is None)
+    ctl.submit_query('до')
+    check('короткий запрос — подсказка, поиска нет', 'не менее' in got['status'] and got['cards'] is None)
+    ctl.submit_query('довер')
+    check('кнопка «Поиск» выдала карточки', got['cards'] and got['total'] >= 2, str(got['status']))
     check('в статусе число топиков', 'Найдено топиков' in got['status'])
+    check('по умолчанию топик целиком', all(not c['expanded'] and c['segments'] == [(0, 0, len(c['text']))] for c in got['cards']))
+    check('в карточке есть жёлтые участки', any(c['hl'] for c in got['cards']))
     n_cards = len(got['cards'])
     first_word = got['words'][0]['word']
     ctl.toggle_word(first_word)
-    check('исключение слова: число показанных карточек не сбрасывается', len(got['cards']) <= n_cards and got['shown'] if False else True)
-    check('слово в панели помечено исключённым', any(r['excluded'] for r in got['words']))
+    check('исключение слова', len(got['cards']) <= n_cards and any(r['excluded'] for r in got['words']))
     ctl.exclude_all_words()
     check('«исключить все»', got['cards'] == [] and all(r['excluded'] for r in got['words']))
     ctl.exclude_all_words()
     check('повторно — вернуть все', all(not r['excluded'] for r in got['words']) and got['cards'])
-    # пагинация
     ctl.config.set('page_size', 1)
-    ctl.on_query_changed('вера'); timers[-1].fire()
+    ctl.submit_query('вера')
     check('страница из 1 карточки + есть ещё', len(got['cards']) == 1 and got['more'] is True)
     ctl.show_more()
     check('показать ещё', len(got['cards']) == 2)
+    ctl.config.set('brief_view', 1)
+    ctl.submit_query('вера')
+    check('краткий вид задаётся настройкой', any(c['segments'] != [(0, 0, len(c['text']))] or len(c['text']) < 60 for c in got['cards']))
+    ctl.config.set('brief_view', 0)
+    ctl.submit_query('вера')
     key = got['cards'][0]['key']
-    body_brief = got['cards'][0]['body']
     ctl.toggle_expand(key)
-    check('раскрытие топика', got['cards'][0]['expanded'] is True and len(got['cards'][0]['body']) >= len(body_brief))
-    # устаревший поиск не затирает новый
-    ctl.run_async = False
-    old_token = ctl._token
-    ctl._apply(ctl.outcome, old_token - 1)
-    check('устаревший результат игнорируется', True)
+    check('раскрытие топика', got['cards'][0]['expanded'] is True)
+
+    # ---------- подчёркивание, конспект ----------
+    ctl.submit_query('вера')
+    card = got['cards'][0]; txt = card['text']
+    i = txt.index('вер') ; j = i + 12
+    check('подчёркнутых нет', card['marks'] == [])
+    check('выделение добавляет подчёркивание', ctl.mark_selection(card['key'], i, j) is True)
+    card2 = [c for c in got['cards'] if c['key'] == card['key']][0]
+    check('подчёркивание видно в карточке', card2['marks'] and card2['marks'][0][0] <= i < card2['marks'][0][1])
+    check('повтор не плодит отметки', ctl.mark_selection(card['key'], i, j) is False and len(ctl.marks.all_marks()) == 1)
+    ctl.mark_selection(card['key'], j - 4, j + 10)
+    check('пересекающиеся отметки сливаются', len(ctl.marks.all_marks()) == 1)
+    ctl.quote_to_conspect(card['key'], txt[i:j])
+    ck = open(paths.conspect_path, encoding='utf-8').read()
+    check('конспект: цитата и источник', ck.startswith('.......' + txt[i:j]) and '(bibl.txt' in ck or '(Грани.txt' in ck, ck)
+    p_txt = ctl.export_marks('txt'); p_docx = ctl.export_marks('docx')
+    check('экспорт txt', p_txt and txt[i:j].strip()[:6] in open(p_txt, encoding='utf-8').read())
+    from docx import Document as _D
+    check('экспорт docx открывается', p_docx and any('Подчёркнутые' in x.text for x in _D(p_docx).paragraphs))
+    ctl.unmark_selection(card['key'], i, j)
+    check('снятие подчёркивания', len(ctl.marks.all_marks()) <= 1)
+    ctl.unmark_selection(card['key'], 0, len(txt))
+    check('снятие со всего', ctl.marks.all_marks() == [])
+    check('экспорт без отметок -> None', ctl.export_marks('txt') is None)
+
+    # ---------- «Дополнить» ----------
+    check('цель не задана', ctl.append_target() == '')
+    ok = ctl.append_to_book('Грани.txt', '3 Добавленный текст про море.')
+    check('дополнение книги', ok and '3 Добавленный' in open(os.path.join(paths.books_dir, 'Грани.txt'), encoding='utf-8').read())
+    check('выбор запомнен', ctl.append_target() == 'Грани.txt' and Controller(paths, run_async=False).append_target() == 'Грани.txt')
+    check('после дополнения книга переиндексирована', ctl.library.find('Грани.txt').state == READY)
+    ctl.submit_query('добавленный')
+    check('новый текст находится поиском', got['total'] >= 1)
+    check('дополнение .docx', ctl.append_to_book('doc.docx', '3 Новый абзац.') and '3 Новый абзац.' in read_text_file(os.path.join(paths.books_dir, 'doc.docx')))
+
+    # ---------- дневник ----------
+    check('дневник пуст', ctl.diary_file() is None)
+    check('запись в дневник', ctl.add_to_diary('Сегодня думал о вере.') and ctl.add_to_diary('Вторая запись про море.'))
+    dn = os.path.join(paths.books_dir, 'dnev.txt')
+    check('dnev.txt в папке книг, записи подряд', open(dn, encoding='utf-8').read() == 'Сегодня думал о вере.\nВторая запись про море.\n')
+    check('дневник в списке книг и проиндексирован', ctl.library.find('dnev.txt') and ctl.library.find('dnev.txt').state == READY)
+    ctl.config.set('page_size', 50); ctl.submit_query('море')
+    check('дневник находится поиском', any(c['key'].startswith('dnev.txt') for c in got['cards']))
+    check('дневник доступен для экспорта', ctl.diary_file() == dn)
+    check('пустая запись не пишется', ctl.add_to_diary('   ') is False)
+
     # обновление списков (кнопка ↻)
     with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:
         f.write("1 Новая книга про веру.\n")
     ini_text = open(paths.config_path, encoding='utf-8').read()
-    open(paths.config_path, 'w', encoding='utf-8').write(ini_text.replace('Икс', 'Икс').replace('Библия, Numeric', 'Священная книга, Numeric'))
+    open(paths.config_path, 'w', encoding='utf-8').write(ini_text.replace('Библия, Numeric', 'Священная книга, Numeric'))
     ctl.refresh()
     names = [r['file_name'] for r in got['books']]
     disp = {r['file_name']: r['display'] for r in got['books']}
@@ -238,12 +275,10 @@ try:
     check('обновление: книга не в индексе помечена', [r for r in got['books'] if r['file_name'] == 'Новая.txt'][0]['state'] == NOT_INDEXED)
     ctl.index_books(['Новая.txt'])
     check('индексация новой книги', ctl.library.find('Новая.txt').state == READY and 'Новая.txt' in ctl.selected)
-    # режим «Векторы»
     ctl.set_mode('vector')
-    ctl.on_query_changed('вера'); timers[-1].fire()
+    ctl.submit_query('вера')
     check('векторы: понятное сообщение', 'ещё не подключены' in got['status'] or 'векторн' in got['status'].lower(), got['status'])
     ctl.set_mode('text')
-    # выбор сохраняется между запусками
     ctl2 = Controller(paths, run_async=False)
     check('выбранные книги помнятся', ctl2.selected == ctl.selected)
 

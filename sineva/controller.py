@@ -3,10 +3,15 @@
 Интерфейс (Kivy) только подписывается на колбэки on_* и вызывает методы. Благодаря этому всё поведение
 проверяется тестами на ПК. Колбэки вызываются через ui_post — в Kivy это Clock.schedule_once, в тестах — вызов на месте.
 """
+import os
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
+from . import marks as marks_mod
+from . import notes
 from .config import AppConfig
+from .highlight import build_brief_view_mapped, get_intervals
 from .library import Book, Library
 from .paths import AppPaths
 from .search import SearchOutcome, SearchService
@@ -28,6 +33,7 @@ class Controller:
         self.library = Library(self.paths, self.config)
         self.vectors = VectorRegistry(self.config, self.paths.vector_dir)
         self.search = SearchService(self.config, self.vectors)
+        self.marks = marks_mod.MarksStore(self.paths.marks_db)
         self.ui_post = ui_post or (lambda fn: fn())
         self.schedule = schedule
         self.run_async = run_async
@@ -72,8 +78,6 @@ class Controller:
             self.selected.add(file_name)
         self._save_selected()
         self.publish_books()
-        if len(self.query.strip()) >= self.config.get_int('min_query_len', 3):
-            self._start_search(self.query)      # состав индексов изменился — результаты обновляются
 
     def select_all(self, value: bool) -> None:
         self.selected = {b.file_name for b in self.library.books if b.ready} if value else set()
@@ -101,8 +105,6 @@ class Controller:
         self.selected &= have
         self.publish_books()
         self.on_status(f"Список обновлён: книг {len(self.library.books)}")
-        if len(self.query.strip()) >= self.config.get_int('min_query_len', 3):
-            self._start_search(self.query)
 
     # ================= индексация =================
     def index_books(self, file_names: List[str]) -> None:
@@ -155,29 +157,17 @@ class Controller:
 
     # ================= ввод запроса и поиск =================
     def on_query_changed(self, text: str) -> None:
-        """Динамический поиск: после паузы search_delay_ms, от min_query_len знаков."""
+        """Текст запроса только запоминается: поиск запускается кнопкой «Поиск» (или Enter)."""
         self.query = text
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        if len(text.strip()) < self.config.get_int('min_query_len', 3):
-            self._token += 1                    # недописанный запрос отменяет идущий поиск
-            self.outcome = SearchOutcome()
-            self.shown = 0
-            self._publish()
-            self.on_status("")
-            return
-        delay = self.config.get_int('search_delay_ms', 300) / 1000.0
-        if self.schedule is None or delay <= 0:
-            self._start_search(text)
-        else:
-            self._timer = self.schedule(lambda: self._start_search(text), delay)
 
-    def submit_query(self) -> None:
-        """Enter/кнопка «Найти»: поиск без ожидания паузы."""
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
+    def submit_query(self, text: str = None) -> None:
+        """Кнопка «Поиск»: единственный способ запустить поиск."""
+        if text is not None:
+            self.query = text
+        need = self.config.get_int('min_query_len', 3)
+        if len(self.query.strip()) < need:
+            self.on_status(f"Введите не менее {need} знаков")
+            return
         self._start_search(self.query)
 
     def _start_search(self, text: str) -> None:
@@ -211,16 +201,180 @@ class Controller:
     # ================= результаты =================
     def _publish(self) -> None:
         visible = self.search.visible(self.outcome)
-        brief = self.config.get_bool('brief_view', True)
+        brief = self.config.get_bool('brief_view', False)
         cards = []
         for i, item in enumerate(visible[:self.shown]):
             key = f"{item['book']}:{item['rowid']}"
             expanded = key in self.expanded
-            cards.append({'key': key, 'header': self.search.header_markup(item, i + 1),
-                          'body': self.search.topic_markup(self.outcome, item, brief=brief and not expanded),
-                          'expanded': expanded})
+            cards.append(self._card(i, key, item, brief and not expanded, expanded))
         self.on_cards(cards, len(visible), len(visible) > self.shown)
         self.on_words(self.search.panel_words(self.outcome))
+
+    def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
+        content = item['content']
+        exact, frags = self.search.highlight_spec(self.outcome, item)
+        if brief:
+            text, hl, segments = build_brief_view_mapped(content, exact, frags)
+        else:
+            text, hl, segments = content, get_intervals(content, exact, frags), [(0, 0, len(content))]
+        spans = []
+        for _m, cs, ce in marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(item['book']))):
+            spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
+        return {'key': key, 'book': item['book'], 'header': self.search.header_markup(item, i + 1),
+                'text': text, 'hl': [tuple(x) for x in hl], 'marks': sorted(spans), 'segments': segments,
+                'expanded': expanded, 'source': self._source_label(item['book'])}
+
+    def _source_label(self, file_name: str) -> str:
+        book = self.library.find(file_name)
+        return f"{file_name} ({book.display})" if book and book.display and book.display != file_name else file_name
+
+    # ================= выделение: подчёркивание и конспект =================
+    def _find_item(self, key: str):
+        for it in self.outcome.results:
+            if f"{it['book']}:{it['rowid']}" == key:
+                return it
+        return None
+
+    def _content_pieces(self, key: str, ds: int, de: int):
+        item = self._find_item(key)
+        if item is None:
+            return None, []
+        brief = self.config.get_bool('brief_view', False) and key not in self.expanded
+        if brief:
+            exact, frags = self.search.highlight_spec(self.outcome, item)
+            _t, _h, segments = build_brief_view_mapped(item['content'], exact, frags)
+        else:
+            segments = [(0, 0, len(item['content']))]
+        return item, marks_mod.display_span_to_content(segments, ds, de)
+
+    def mark_selection(self, key: str, ds: int, de: int) -> bool:
+        """Выделенное автоматически попадает в подчёркнутое (как «Ч» на ПК). True — что-то добавлено."""
+        item, pieces = self._content_pieces(key, ds, de)
+        if item is None:
+            return False
+        content, file_name, changed = item['content'], item['book'], False
+        located_all = marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(file_name)))
+        for cs, ce in pieces:
+            info = marks_mod.analyze_span(content, located_all, cs, ce)
+            if info is None:
+                continue
+            cs2, ce2, overlapping, fully = info
+            if fully:
+                continue
+            delete_ids, spans = marks_mod.plan_add(cs2, ce2, overlapping)
+            self.marks.delete_marks(delete_ids)
+            for s_, e_ in spans:
+                fields = marks_mod.span_fields(content, s_, e_)
+                if fields:
+                    self.marks.add_mark(file_name, *fields)
+                    changed = True
+            located_all = marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(file_name)))
+        if changed:
+            self._publish()
+        return changed
+
+    def unmark_selection(self, key: str, ds: int, de: int) -> bool:
+        item, pieces = self._content_pieces(key, ds, de)
+        if item is None:
+            return False
+        content, file_name, changed = item['content'], item['book'], False
+        for cs, ce in pieces:
+            located = marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(file_name)))
+            info = marks_mod.analyze_span(content, located, cs, ce)
+            if info is None or not info[2]:
+                continue
+            cs2, ce2, overlapping, _fully = info
+            delete_ids, keep = marks_mod.plan_remove(content, cs2, ce2, overlapping)
+            self.marks.delete_marks(delete_ids)
+            for s_, e_ in keep:
+                fields = marks_mod.span_fields(content, s_, e_)
+                if fields:
+                    self.marks.add_mark(file_name, *fields)
+            changed = True
+        if changed:
+            self._publish()
+        return changed
+
+    def quote_to_conspect(self, key: str, text: str) -> None:
+        """«В конспект»: цитата + источник — в файл 0_Конспект.txt (формат как на ПК)."""
+        item = self._find_item(key)
+        source = self._source_label(item['book']) if item else ''
+        try:
+            notes.append_quote(self.paths.conspect_path, text, source)
+            self.on_status("Сохранено в конспект")
+        except Exception as e:
+            self.on_status(f"Не удалось записать в конспект: {e}")
+
+    # ================= экспорт, «поделиться», «Дополнить» =================
+    def export_marks(self, fmt: str = 'txt') -> Optional[str]:
+        """Файл со всеми подчёркнутыми фрагментами в exports/. None — подчёркиваний ещё нет."""
+        marks = self.marks.all_marks()
+        if not marks:
+            self.on_status("Подчёркнутых фрагментов пока нет")
+            return None
+        path = os.path.join(self.paths.exports_dir, f"underlines_{time.strftime('%Y-%m-%d_%H%M')}.{fmt}")
+        try:
+            (marks_mod.export_marks_docx if fmt == 'docx' else marks_mod.export_marks_txt)(marks, path)
+        except Exception as e:
+            self.on_status(f"Не удалось сохранить: {e}")
+            return None
+        self.on_status(f"Сохранено: {path}")
+        return path
+
+    def conspect_file(self) -> Optional[str]:
+        if os.path.exists(self.paths.conspect_path) and os.path.getsize(self.paths.conspect_path) > 0:
+            return self.paths.conspect_path
+        self.on_status("Конспект пока пуст")
+        return None
+
+    def append_target(self) -> str:
+        """Книга для «Дополнить»: запомненная, если она ещё есть в списке."""
+        name = self.config.get('append_target', '')
+        names = [b.file_name for b in self.library.books]
+        return name if name in names else ''
+
+    def add_to_diary(self, text: str) -> bool:
+        """«В дневник»: текст дописывается в dnev.txt (папка книг), книга переиндексируется и попадает в поиск."""
+        if not text.strip():
+            return False
+        path = self.paths.diary_path
+        try:
+            if not os.path.exists(path):
+                open(path, 'wb').close()
+            notes.append_to_book(path, text)
+        except Exception as e:
+            self.on_status(f"Не удалось записать в дневник: {e}")
+            return False
+        self.library.scan()
+        self.publish_books()
+        self.on_status("Записано в дневник. Переиндексация…")
+        self.index_books([os.path.basename(path)])
+        return True
+
+    def diary_file(self) -> Optional[str]:
+        path = self.paths.diary_path
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+        self.on_status("Дневник пока пуст")
+        return None
+
+    def append_to_book(self, file_name: str, text: str) -> bool:
+        book = self.library.find(file_name)
+        if book is None:
+            self.on_status("Книга не найдена")
+            return False
+        try:
+            notes.append_to_book(book.path, text)
+        except Exception as e:
+            self.on_status(f"Не удалось дополнить: {e}")
+            return False
+        self.config.set('append_target', file_name)       # выбор запоминается
+        self.config.save()
+        self.library.scan()
+        self.publish_books()
+        self.on_status(f"Добавлено в «{book.display}». Переиндексация…")
+        self.index_books([file_name])
+        return True
 
     def show_more(self) -> None:
         self.shown += self.config.get_int('page_size', 20)
@@ -265,8 +419,6 @@ class Controller:
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode if mode in ('text', 'vector') else 'text'
-        if len(self.query.strip()) >= self.config.get_int('min_query_len', 3):
-            self._start_search(self.query)
 
     # ================= служебное =================
     def _run(self, fn: Callable) -> None:

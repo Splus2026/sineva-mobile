@@ -5,9 +5,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 class W:
     def __init__(self, *a, **kw):
-        self.__dict__.update(kw); self.children = []; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1
+        self.__dict__.update(kw); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1
         self.canvas = types.SimpleNamespace(before=_Ctx())
     def bind(self, **kw): pass
+    def collide_point(self, x, y): return True
+    def texture_update(self): pass
     def add_widget(self, w): self.children.append(w)
     def clear_widgets(self): self.children = []
     def setter(self, n): return lambda *a: None
@@ -15,6 +17,7 @@ class W:
     def dismiss(self): pass
     def __getattr__(self, n): return lambda *a, **k: None
 class _Ctx:
+    def clear(self): pass
     def __enter__(self): return self
     def __exit__(self, *a): return False
 
@@ -34,9 +37,11 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),
              ('spinner', 'Spinner'), ('switch', 'Switch'), ('textinput', 'TextInput')]:
     mod('kivy.uix.' + n, **{c: W})
-mod('kivy.uix'); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W)
+mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W)
 mod('kivy.uix.filechooser', FileChooserListView=W)
-mod('kivy.graphics', Color=W, RoundedRectangle=W)
+mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W)
+clip = {}
+mod('kivy.core.clipboard', Clipboard=types.SimpleNamespace(copy=lambda t: clip.update(t=t), paste=lambda: 'вставка'))
 
 tmp = tempfile.mkdtemp()
 import sineva.paths as sp
@@ -53,8 +58,30 @@ app.build()
 c = app.ctl
 c.run_async = False
 c.index_books(['a.txt'])
-c.on_query_changed('вера'); c.submit_query()
-c.toggle_word(c.word_rows()[0]['word']); c.exclude_all_words(); c.show_more()
-app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter()
-app.search_s.toggle_mode(); app.books_s.add()
-print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children))
+app.search_s.input.text = 'вера'
+app.search_s.search()
+card = app.search_s.box.children[0]
+c.toggle_word(c.word_rows()[0]['word']); c.exclude_all_words(); c.exclude_all_words(); c.show_more()
+app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter(); app.books_s.add()
+app.settings_s.export('txt')
+app.open_append()
+app.open_diary()
+app.settings_s.share_diary()
+# выделение: долгое нажатие на слово и подчёркивание
+from sineva.ui.app import SelectableText
+cd = c.outcome and [x for x in c._publish.__self__.search.visible(c.outcome)]
+cards = []
+c.on_cards = lambda cs, t, m: cards.extend(cs)
+c._publish()
+w = SelectableText(cards[0], app.on_selection)
+w._refresh()
+rid = next(i for i, r in w._refs_info.items() if r['hl'])
+w.select_mode = True; w._refresh()
+w.refs = {str(i): [(10 * i, 0, 10 * i + 9, 20)] for i in w._refs_info}
+touch = types.SimpleNamespace(pos=(12, 5), grab_current=None, grab=lambda x: None, ungrab=lambda x: None)
+w._lp_touch = touch; w.texture_size = (400, 20); w.center_x = 200; w.center_y = 10
+w._long_press(0)
+print('выделено после долгого нажатия:', w.sel)
+w.on_select(cards[0]['key'], 0, 4, w)
+print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children),
+      'подчёркнутых:', len(c.marks.all_marks()))

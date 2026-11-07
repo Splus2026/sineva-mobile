@@ -115,6 +115,57 @@ def _candidate_terms(query_words_info) -> Tuple[List[str], bool]:
     return terms, fts_ok
 
 
+_TOKEN_RE = re.compile(r'[а-яА-ЯёЁa-zA-Z0-9]+')
+
+
+class FastMatcher:
+    """Результат тот же, что у queryparser.compute_matches, но быстрее: уровень совпадения считается
+       один раз для каждого различного слова (кэш на весь поиск), а не для каждого вхождения в каждом топике.
+       Это главное ускорение на телефоне."""
+
+    def __init__(self, query_words_info):
+        frags = []
+        for word, min_len, must_start in query_words_info:
+            exact_only = must_start and min_len is not None and min_len >= len(word)
+            for frag, level in get_fragments_with_levels(word, min_len):
+                frags.append((frag.lower(), level, must_start, exact_only))
+        self._frags = frags
+        self._memo = {}
+
+    def _level(self, token_lower):
+        best = 0
+        for frag, level, must_start, exact_only in self._frags:
+            if level <= best:
+                continue
+            if exact_only:
+                ok = token_lower == frag
+            elif must_start:
+                ok = token_lower.startswith(frag)
+            else:
+                ok = frag in token_lower
+            if ok:
+                best = level
+        return best
+
+    def match(self, content):
+        memo = self._memo
+        counts = {i: 0 for i in range(5, 11)}
+        matched = set()
+        for token in _TOKEN_RE.findall(content):
+            t = token.lower()
+            lvl = memo.get(t)
+            if lvl is None:
+                lvl = memo[t] = self._level(t)
+            if lvl:
+                counts[lvl] += 1
+                matched.add(t)
+        if not matched:
+            return None
+        max_level = max(l for l, c in counts.items() if c > 0)
+        return {'matched_words': list(matched), 'counts': counts,
+                'max_level': max_level, 'count_at_max': counts[max_level]}
+
+
 class BookIndex:
     """Открытый индекс книги для поиска. Создавайте на каждый поиск и закрывайте (потоки не делят соединение)."""
 
@@ -145,7 +196,7 @@ class BookIndex:
         except sqlite3.Error:
             return 0
 
-    def search(self, query_words_info, candidate_limit: int = 3000) -> List[dict]:
+    def search(self, query_words_info, candidate_limit: int = 3000, cancelled=None) -> List[dict]:
         """Топики, где есть слова запроса или их начальные фрагменты (как в десктопной версии).
            Возвращает [{'rowid', 'content', 'meta', 'position'}] — без сортировки между книгами."""
         if not query_words_info:
@@ -165,8 +216,11 @@ class BookIndex:
 
         out = []
         positions = self._positions([r[0] for r in rows])
-        for rowid, content in rows:
-            meta = compute_matches(content, query_words_info)
+        matcher = FastMatcher(query_words_info)
+        for n, (rowid, content) in enumerate(rows):
+            if cancelled and n % 100 == 0 and cancelled():
+                break                              # запрос уже изменился — не тратим батарею
+            meta = matcher.match(content)
             if meta is None:
                 continue
             out.append({'rowid': rowid, 'content': content, 'meta': meta, 'position': positions.get(rowid, '0')})

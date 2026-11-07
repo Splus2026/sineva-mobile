@@ -1,7 +1,9 @@
 """Интерфейс «Синева+ Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
+from kivy.graphics import Color, Rectangle
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -13,18 +15,23 @@ from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
+from kivy.uix.widget import Widget
 from kivy.uix.textinput import TextInput
 
 from .. import __version__
 from ..controller import Controller
 from ..search import escape_markup
-from .picker import pick_files
+from .picker import pick_files, share_file
+from .textmodel import atom_at, build_markup, sentence_bounds
 
 BG = (0.97, 0.97, 0.98, 1)
 CARD = (1, 1, 1, 1)
 TXT = (0.1, 0.1, 0.12, 1)
 ACCENT = (0.04, 0.34, 0.82, 1)
 GRAY = (0.45, 0.45, 0.5, 1)
+YELLOW = (1, 1, 0, 1)                    # слово запроса: #FFFF00 (как на ПК)
+YELLOW_SOFT = (1, 1, 0.6, 1)             # часть слова: #FFFF99
+SEL_BLUE = (0.67, 0.8, 1, 1)             # выделение пальцем: #AACCFF
 
 SEPARATORS = ['N1000', 'N500', 'N2000', 'NS300', 'NS800', 'Numeric', 'ExcelRow1']
 
@@ -88,6 +95,149 @@ def vlist():
     return sv, box
 
 
+class SelectableText(Label):
+    """Текст топика: жёлтый маркер на найденных словах, подчёркнутое, выделение долгим нажатием.
+       Долгое нажатие выделяет слово, не отпуская палец — тянем до нужного места; по отпусканию вызывается
+       on_select(card_key, start, end). Прокрутка списка обычным движением пальца работает как раньше."""
+
+    LONG_PRESS = 0.45
+
+    def __init__(self, card, on_select, **kw):
+        kw.setdefault('color', (0.05, 0.05, 0.05, 1))
+        super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(16), **kw)
+        self.card, self.on_select = card, on_select
+        self.sel = None
+        self.select_mode = False
+        self._refs_info = {}
+        self._lp_ev = None
+        self._lp_touch = None
+        self._anchor = None
+        self.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+        self.bind(texture_size=self._on_texture)
+        self.bind(pos=lambda *_: self._redraw(), size=lambda *_: self._redraw())
+        self._refresh()
+
+    # --- разметка и подложки
+    def _refresh(self):
+        c = self.card
+        self.text, self._refs_info = build_markup(c['text'], c['hl'], c['marks'], self.sel, self.select_mode)
+
+    def _on_texture(self, w, ts):
+        self.height = ts[1] + dp(10)
+        self._redraw()
+
+    def _redraw(self):
+        self.canvas.before.clear()
+        ts = self.texture_size
+        if not ts[1]:
+            return
+        ox = self.center_x - ts[0] / 2.0
+        oy = self.center_y + ts[1] / 2.0
+        with self.canvas.before:
+            for rid, boxes in self.refs.items():
+                info = self._refs_info.get(int(rid))
+                if not info:
+                    continue
+                if info['sel']:
+                    color = SEL_BLUE
+                elif info['hl'] == 2:
+                    color = YELLOW
+                elif info['hl'] == 1:
+                    color = YELLOW_SOFT
+                else:
+                    continue
+                Color(*color)
+                for x1, y1, x2, y2 in boxes:
+                    Rectangle(pos=(ox + x1, oy - y2), size=(x2 - x1, y2 - y1))
+
+    def _hit(self, pos):
+        ts = self.texture_size
+        tx = pos[0] - (self.center_x - ts[0] / 2.0)
+        ty = ts[1] - (pos[1] - (self.center_y - ts[1] / 2.0))
+        return atom_at(self._refs_info, self.refs, tx, ty)
+
+    # --- касания
+    def _scroll_parent(self):
+        p = self.parent
+        while p is not None and not hasattr(p, 'do_scroll_y'):
+            p = p.parent
+        return p
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and not self._lp_ev:
+            self._lp_touch = touch
+            self._start_pos = touch.pos
+            self._lp_ev = Clock.schedule_once(self._long_press, self.LONG_PRESS)
+        return super().on_touch_down(touch)
+
+    def _long_press(self, dt):
+        self._lp_ev = None
+        touch = self._lp_touch
+        if touch is None:
+            return
+        self.select_mode = True
+        self.sel = None
+        self._refresh()
+        self.texture_update()                  # обновляет self.refs сразу — по ним ищем слово под пальцем
+        hit = self._hit(touch.pos)
+        if hit is None:
+            self.select_mode = False
+            self._refresh()
+            return
+        self._anchor = hit
+        self.sel = hit
+        touch.grab(self)
+        sv = self._scroll_parent()
+        if sv is not None:
+            self._sv_prev = sv.do_scroll_y
+            sv.do_scroll_y = False             # пока тянем выделение, список не прокручивается
+        self._refresh()
+        self.texture_update()
+        self._redraw()
+
+    def on_touch_move(self, touch):
+        if touch.grab_current is self and self._anchor is not None:
+            hit = self._hit(touch.pos)
+            if hit is not None:
+                self.sel = (min(self._anchor[0], hit[0]), max(self._anchor[1], hit[1]))
+                self._refresh()
+                self.texture_update()
+                self._redraw()
+            return True
+        if self._lp_ev and touch is self._lp_touch:
+            dx, dy = touch.pos[0] - self._start_pos[0], touch.pos[1] - self._start_pos[1]
+            if dx * dx + dy * dy > dp(12) ** 2:     # палец поехал — это прокрутка, а не выделение
+                self._lp_ev.cancel()
+                self._lp_ev = None
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if self._lp_ev:
+            self._lp_ev.cancel()
+            self._lp_ev = None
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            sv = self._scroll_parent()
+            if sv is not None:
+                sv.do_scroll_y = getattr(self, '_sv_prev', True)
+            sel, self._anchor = self.sel, None
+            self._lp_touch = None
+            if sel and sel[1] > sel[0]:
+                self.on_select(self.card['key'], sel[0], sel[1], self)
+            else:
+                self.clear_selection()
+            return True
+        self._lp_touch = None
+        return super().on_touch_up(touch)
+
+    def clear_selection(self):
+        self.sel = None
+        self.select_mode = False
+        self._refresh()
+        self.texture_update()
+        self._redraw()
+
+
 # ===================================================================
 class SearchScreen(Screen):
     def __init__(self, app, **kw):
@@ -97,14 +247,14 @@ class SearchScreen(Screen):
         top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         self.input = TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
                                font_size=sp(17), write_tab=False)
-        self.input.bind(text=lambda w, v: self.ctl.on_query_changed(v))
-        self.input.bind(on_text_validate=lambda *_: self.ctl.submit_query())
-        self.mode_btn = Button(text='Слова', size_hint_x=None, width=dp(84), background_normal='',
-                               background_color=GRAY, color=(1, 1, 1, 1))
-        self.mode_btn.bind(on_release=lambda *_: self.toggle_mode())
+        self.input.bind(text=lambda w, v: self.ctl.on_query_changed(v))      # только запоминает запрос
+        self.input.bind(on_text_validate=lambda *_: self.search())
+        self.go = Button(text='Поиск', size_hint_x=None, width=dp(88), background_normal='',
+                         background_color=ACCENT, color=(1, 1, 1, 1))
+        self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
-        top.add_widget(self.mode_btn)
-        self.status = mlabel('Выберите книги на вкладке «Книги»', font_size=sp(13))
+        top.add_widget(self.go)
+        self.status = mlabel('Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
         self.sv, self.box = vlist()
         root.add_widget(top)
@@ -112,10 +262,9 @@ class SearchScreen(Screen):
         root.add_widget(self.sv)
         self.add_widget(root)
 
-    def toggle_mode(self):
-        new = 'vector' if self.ctl.mode == 'text' else 'text'
-        self.mode_btn.text = 'Смысл' if new == 'vector' else 'Слова'
-        self.ctl.set_mode(new)
+    def search(self):
+        self.input.focus = False
+        self.ctl.submit_query(self.input.text)
 
     def set_status(self, text):
         self.status.text = escape_markup(text)
@@ -135,14 +284,17 @@ class SearchScreen(Screen):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
-        body = mlabel(c['body'])
+        body = SelectableText(c, self.app.on_selection)
         key = c['key']
-        more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
-                      background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+        more = Button(text='Полностью', size_hint_y=None, height=dp(34), background_normal='',
+                      background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
         more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
-        for w in (head, body, more):
-            box.add_widget(w)
-        from kivy.graphics import Color, RoundedRectangle
+        box.add_widget(head)
+        box.add_widget(body)
+        if self.ctl.config.get_bool('brief_view', False):         # кнопка нужна только в кратком виде
+            more.text = 'Свернуть' if c['expanded'] else 'Полностью'
+            box.add_widget(more)
+        from kivy.graphics import RoundedRectangle
         with box.canvas.before:
             Color(*CARD)
             rect = RoundedRectangle(radius=[dp(8)])
@@ -161,9 +313,29 @@ class WordsScreen(Screen):
         root.add_widget(self.sv)
         self.add_widget(root)
         self._labels = {}
+        self.rows, self.dirty, self.limit = [], False, self.CHUNK
+
+    CHUNK = 60
 
     def show_words(self, rows):
-        """Если набор слов не изменился, обновляем подписи на месте: список остаётся там, где был."""
+        """Слов может быть тысячи — виджеты создаём только для видимой части и только когда открыта эта вкладка.
+           Если набор слов не изменился, подписи обновляются на месте: список остаётся там, где был."""
+        self.rows = rows
+        self.dirty = True
+        if self.manager is not None and self.manager.current == 'words':
+            self._render()
+
+    def on_pre_enter(self, *a):
+        if self.dirty:
+            self._render()
+
+    def _more(self):
+        self.limit += self.CHUNK
+        self._render()
+
+    def _render(self):
+        self.dirty = False
+        rows = self.rows[:self.limit]
         order = [r['word'] for r in rows]
         if order == list(self._labels):
             for r in rows:
@@ -181,6 +353,8 @@ class WordsScreen(Screen):
                 b.bind(on_release=lambda *_a, w=w: self.ctl.toggle_word(w))
                 self._labels[w] = b
                 self.box.add_widget(b)
+            if len(self.rows) > self.limit:
+                self.box.add_widget(btn(f'Показать ещё слова (всего {len(self.rows)})', self._more, color=GRAY))
         keep_scroll(self.sv, rebuild)
 
 
@@ -194,6 +368,9 @@ class BooksScreen(Screen):
         bar.add_widget(btn('↻', self.ctl.refresh, color=GRAY, size_hint_x=None, width=dp(60)))
         bar.add_widget(btn('Индексировать', self.index_needed, color=GRAY))
         root.add_widget(bar)
+        self.status = mlabel('', font_size=sp(13))
+        self.status.color = ACCENT
+        root.add_widget(self.status)
         self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(6))
         root.add_widget(self.progress)
         self.sv, self.box = vlist()
@@ -206,13 +383,20 @@ class BooksScreen(Screen):
             added = self.ctl.add_books(paths)
             if added:
                 self.ctl.index_books(added)
-        pick_files(lambda p: Clock.schedule_once(lambda dt: got(p), 0))
+        pick_files(lambda p: Clock.schedule_once(lambda dt: got(p), 0),
+                   self.ctl.config.get('picker_start', ''),
+                   lambda uri: self.ctl.set_setting('picker_start', uri))
 
     def index_needed(self):
         self.ctl.index_books([r['file_name'] for r in self._rows if r['state'] != 'ready'])
 
+    def set_status(self, text):
+        self.status.text = escape_markup(text)
+
     def show_progress(self, name, done, total):
-        self.progress.value = 100 * done / total if total else 0
+        pct = 100 * done / total if total else 0
+        self.progress.value = pct
+        self.status.text = escape_markup(f"Индексация: {name} — {pct:.0f}%")
 
     def show_books(self, rows):
         self._rows = rows
@@ -271,23 +455,45 @@ class BooksScreen(Screen):
 class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name='settings', **kw)
-        self.ctl = app.ctl
+        self.app, self.ctl = app, app.ctl
         root = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
         brief = BoxLayout(size_hint_y=None, height=dp(44))
         brief.add_widget(mlabel('Краткий вид (только предложения с совпадениями)'))
-        sw = Switch(active=self.ctl.config.get_bool('brief_view', True), size_hint_x=None, width=dp(90))
+        sw = Switch(active=self.ctl.config.get_bool('brief_view', False), size_hint_x=None, width=dp(90))
         sw.bind(active=lambda w, v: (self.ctl.set_setting('brief_view', 1 if v else 0), self.ctl._publish()))
         brief.add_widget(sw)
         root.add_widget(brief)
+        root.add_widget(btn('В дневник…', self.app.open_diary))
+        root.add_widget(btn('Дополнить книгу…', self.app.open_append))
+        root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед кнопками «Поделиться»
+        root.add_widget(btn('Подчёркнутое → TXT и поделиться', lambda: self.export('txt'), color=GRAY))
+        root.add_widget(btn('Подчёркнутое → Word (DOCX) и поделиться', lambda: self.export('docx'), color=GRAY))
+        root.add_widget(btn('Поделиться конспектом', self.share_conspect, color=GRAY))
+        root.add_widget(btn('Поделиться дневником', self.share_diary, color=GRAY))
         self.info = mlabel('', font_size=sp(13))
         root.add_widget(self.info)
         root.add_widget(BoxLayout())
         self.add_widget(root)
 
+    def export(self, fmt):
+        path = self.ctl.export_marks(fmt)
+        if path:
+            share_file(path, self.ctl.on_status)
+
+    def share_diary(self):
+        path = self.ctl.diary_file()
+        if path:
+            share_file(path, self.ctl.on_status)
+
+    def share_conspect(self):
+        path = self.ctl.conspect_file()
+        if path:
+            share_file(path, self.ctl.on_status)
+
     def on_pre_enter(self, *a):
         v = self.ctl.vector_status()
         vec = ('Смысловой поиск: модели подключены — ' + ', '.join(v['models'])) if v['ready'] else \
-              'Смысловой поиск (векторные модели): пока не подключён. Архитектура готова, модели появятся позже.'
+              'Смысловой поиск (векторные модели): пока не подключён, архитектура готова.'
         if v['problems']:
             vec += '\n' + '\n'.join(escape_markup(p) for p in v['problems'])
         self.info.text = (f"Синева+ Mobile {__version__}\nПапка книг:\n{escape_markup(self.ctl.paths.books_dir)}\n"
@@ -310,7 +516,7 @@ class SinevaApp(App):
             self.sm.add_widget(s)
         c = self.ctl
         c.on_cards = self.search_s.show_cards
-        c.on_status = self.search_s.set_status
+        c.on_status = lambda t: (self.search_s.set_status(t), self.books_s.set_status(t))
         c.on_words = self.words_s.show_words
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
@@ -328,6 +534,98 @@ class SinevaApp(App):
         if not c.library.books:
             self.sm.current = 'books'
         return root
+
+    # ---------- выделенный фрагмент: автоподчёркивание + меню ----------
+    def on_selection(self, key, start, end, widget):
+        text = widget.card['text']
+        ctl = self.ctl
+        ctl.mark_selection(key, start, end)          # выделенное автоматически сохраняется в подчёркнутом
+        chosen = text[start:end].strip()
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        preview = mlabel(escape_markup(chosen if len(chosen) < 300 else chosen[:300] + '…'), font_size=sp(14))
+        box.add_widget(preview)
+        pop = Popup(title='Выделено · сохранено в подчёркнутом', content=box, size_hint=(0.95, None), height=dp(380))
+
+        def close(*_):
+            pop.dismiss()
+
+        def to_conspect():
+            ctl.quote_to_conspect(key, chosen)
+            close()
+
+        def copy():
+            Clipboard.copy(chosen)
+            ctl.on_status('Скопировано')
+            close()
+
+        def unmark():
+            ctl.unmark_selection(key, start, end)
+            close()
+
+        def sentence():
+            a, b = sentence_bounds(text, start, end)
+            close()
+            ctl.mark_selection(key, a, b)
+            self.on_selection(key, a, b, widget)
+
+        for label, fn, color in (('В конспект', to_conspect, ACCENT), ('Копировать', copy, GRAY),
+                                 ('Всё предложение', sentence, GRAY),
+                                 ('Снять подчёркивание', unmark, (0.7, 0.15, 0.15, 1)),
+                                 ('Закрыть', close, GRAY)):
+            box.add_widget(btn(label, fn, color=color))
+        pop.open()
+
+    # ---------- «Дополнить» ----------
+    def open_append(self):
+        ctl = self.ctl
+        books = ctl.library.books
+        if not books:
+            ctl.on_status('Сначала добавьте книги')
+            return
+        names = {f"{b.display} · {b.file_name}": b.file_name for b in books}
+        remembered = ctl.append_target()
+        first = next((k for k, v in names.items() if v == remembered), next(iter(names)))
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(44))
+        text = TextInput(hint_text='Вставьте текст — он добавится в конец выбранной книги', multiline=True)
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        pop = Popup(title='Дополнить книгу (выбор запоминается)', content=box, size_hint=(0.97, 0.9))
+
+        def paste():
+            text.text = text.text + (Clipboard.paste() or '')
+
+        def add():
+            if not text.text.strip():
+                return
+            if self.ctl.append_to_book(names[spin.text], text.text):
+                pop.dismiss()
+
+        row.add_widget(btn('Вставить из буфера', paste, color=GRAY))
+        row.add_widget(btn('Добавить', add))
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        for w in (spin, text, row):
+            box.add_widget(w)
+        pop.open()
+
+    def open_diary(self):
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        text = TextInput(hint_text='Запись добавится в конец файла dnev.txt (он есть в списке книг)', multiline=True)
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        pop = Popup(title='В дневник', content=box, size_hint=(0.97, 0.9))
+
+        def paste():
+            text.text = text.text + (Clipboard.paste() or '')
+
+        def add():
+            if self.ctl.add_to_diary(text.text):
+                pop.dismiss()
+
+        row.add_widget(btn('Вставить из буфера', paste, color=GRAY))
+        row.add_widget(btn('Записать', add))
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        box.add_widget(text)
+        box.add_widget(row)
+        pop.open()
 
     def _on_key(self, window, key, *a):
         if key == 27 and self.sm.current != 'search':       # «Назад» возвращает на поиск
