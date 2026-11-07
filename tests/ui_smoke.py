@@ -31,7 +31,7 @@ class Clock:
 class App(W):
     def run(self): pass
 mod('kivy'); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
-mod('kivy.core'); mod('kivy.core.window', Window=W())
+mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None))
 mod('kivy.metrics', dp=lambda x: x if isinstance(x, (int, float)) else 10, sp=lambda x: x)
 for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('label', 'Label'),
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),

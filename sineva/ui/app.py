@@ -37,6 +37,13 @@ SEL_BLUE = (0.67, 0.8, 1, 1)             # выделение пальцем: #A
 SEPARATORS = ['N1000', 'N500', 'N2000', 'NS300', 'NS800', 'Numeric', 'ExcelRow1']
 
 
+def top_popup(title, content, height):
+    """Диалог в верхней части экрана (не выше половины): клавиатура снизу его не закрывает."""
+    h = min(height, Window.height * 0.5)
+    return Popup(title=title, content=content, size_hint=(1, None), height=h, pos_hint={'top': 1},
+                 auto_dismiss=False, title_size=sp(15), separator_height=dp(2))
+
+
 class ClockTimer:
     """Объект с .cancel() для задержки ввода в Controller."""
     def __init__(self, fn, delay):
@@ -308,7 +315,7 @@ class BooksScreen(Screen):
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         bar = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         bar.add_widget(btn('Добавить', self.add))
-        bar.add_widget(btn('↻', self.ctl.refresh, color=GRAY, size_hint_x=None, width=dp(60)))
+        bar.add_widget(btn('↻', self.ctl.refresh, color=GRAY, size_hint_x=None, width=dp(64), font_size=sp(30), bold=True))
         bar.add_widget(btn('Индексировать', self.index_needed, color=GRAY))
         root.add_widget(bar)
         self.status = mlabel('', font_size=sp(13))
@@ -368,35 +375,31 @@ class BooksScreen(Screen):
                       f"{escape_markup(r['status'])} · {r['separator']} · {r['size_kb']} КБ[/color][/size]")
         info.size_hint_y = 1
         info.bind(height=lambda *_: None)
-        edit = Button(text='⚙', size_hint_x=None, width=dp(48), background_normal='', background_color=GRAY)
+        edit = Button(text='⚙', size_hint_x=None, width=dp(56), background_normal='', background_color=GRAY,
+                      font_size=sp(28), bold=True, color=(1, 1, 1, 1))
         edit.bind(on_release=lambda *_a, r=r: self.edit(r))
         for w in (cb, info, edit):
             row.add_widget(w)
         return row
 
     def edit(self, r):
-        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
-        name = TextInput(text=r['display'], multiline=False, size_hint_y=None, height=dp(44))
-        sep = Spinner(text=r['separator'], values=SEPARATORS, size_hint_y=None, height=dp(44))
-        sep_custom = TextInput(hint_text='или свой разделитель (N700, NS400, строка…)', multiline=False,
-                               size_hint_y=None, height=dp(44))
-        for w in (mlabel('Название'), name, mlabel('Разбивка на топики'), sep, sep_custom):
-            box.add_widget(w)
+        """Название и разделитель — два поля; «Отмена» просто закрывает окно без изменений."""
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        name = TextInput(text=r['display'], hint_text='Название (алиас)', multiline=False,
+                         size_hint_y=None, height=dp(44), font_size=sp(16))
+        sep = TextInput(text=r['separator'], hint_text='Разделитель: N1000, NS300, Numeric, ExcelRow1 или строка',
+                        multiline=False, size_hint_y=None, height=dp(44), font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = Popup(title=r['file_name'], content=box, size_hint=(0.95, None), height=dp(420))
+        pop = top_popup(r['file_name'], box, dp(210))
 
         def save():
             pop.dismiss()
-            self.ctl.edit_book(r['file_name'], name.text.strip() or r['display'],
-                               sep_custom.text.strip() or sep.text)
+            self.ctl.edit_book(r['file_name'], name.text.strip() or r['display'], sep.text.strip() or r['separator'])
             self.ctl.index_books([r['file_name']])
-
-        def remove():
-            pop.dismiss()
-            self.ctl.remove_book(r['file_name'], delete_file=False)
         row.add_widget(btn('Сохранить', save))
-        row.add_widget(btn('Убрать', remove, color=(0.7, 0.15, 0.15, 1)))
-        box.add_widget(row)
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        for w in (name, sep, row):
+            box.add_widget(w)
         pop.open()
 
 
@@ -417,17 +420,16 @@ class SettingsScreen(Screen):
         font.add_widget(btn('−', lambda: self.font(-1), size_hint_x=None, width=dp(60)))
         font.add_widget(btn('+', lambda: self.font(1), size_hint_x=None, width=dp(60)))
         root.add_widget(font)
-        root.add_widget(btn('В дневник…', self.app.open_diary))
+        root.add_widget(btn('Дневник', self.app.open_diary))
         root.add_widget(btn('Дополнить книгу…', self.app.open_append))
         root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед «Поделиться»
         self.share_btn = btn('Поделиться ▾', self.toggle_share, color=GRAY)
         root.add_widget(self.share_btn)
-        self.share_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6), opacity=0)
-        for label, fn in (('Подчёркнутое (TXT)', lambda: self.export('txt')),
-                          ('Подчёркнутое (Word, DOCX)', lambda: self.export('docx')),
-                          ('Конспект', self.share_conspect),
-                          ('Дневник', self.share_diary)):
-            self.share_box.add_widget(btn(label, fn, color=(0.35, 0.37, 0.45, 1)))
+        self.share_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
+        self._share_items = (('Подчёркнутое (TXT)', lambda: self.export('txt')),
+                             ('Подчёркнутое (Word, DOCX)', lambda: self.export('docx')),
+                             ('Конспект', self.share_conspect),
+                             ('Дневник', self.share_diary))
         root.add_widget(self.share_box)
         root.add_widget(Widget(size_hint_y=None, height=dp(24)))
         root.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
@@ -445,11 +447,16 @@ class SettingsScreen(Screen):
         self.font_label.text = f"Размер шрифта: {self.app.change_font(delta)}"
 
     def toggle_share(self):
-        opened = self.share_box.height == 0
-        n = len(self.share_box.children)
-        self.share_box.height = (dp(44) + dp(6)) * n if opened else 0
-        self.share_box.opacity = 1 if opened else 0
-        self.share_btn.text = 'Поделиться ▴' if opened else 'Поделиться ▾'
+        """Скрытые кнопки не должны лежать в разметке: даже невидимые, они перехватывали бы нажатия."""
+        if self.share_box.children:
+            self.share_box.clear_widgets()
+            self.share_box.height = 0
+            self.share_btn.text = 'Поделиться ▾'
+            return
+        for label, fn in self._share_items:
+            self.share_box.add_widget(btn(label, fn, color=(0.35, 0.37, 0.45, 1)))
+        self.share_box.height = (dp(44) + dp(6)) * len(self._share_items) - dp(6)
+        self.share_btn.text = 'Поделиться ▴'
 
     def add_shortcut(self):
         add_home_shortcut(self.ctl.on_status)
@@ -541,11 +548,22 @@ class SinevaApp(App):
         names = {f"{b.display} · {b.file_name}": b.file_name for b in books}
         remembered = ctl.append_target()
         first = next((k for k, v in names.items() if v == remembered), next(iter(names)))
-        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
-        spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(44))
-        text = TextInput(hint_text='Вставьте текст — он добавится в конец выбранной книги', multiline=True)
+        box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14))
+        last = TextInput(text='', readonly=True, size_hint_y=0.4, font_size=sp(13),
+                         background_color=(0.94, 0.95, 0.98, 1), foreground_color=(0.25, 0.25, 0.3, 1))
+        text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
+                         size_hint_y=0.6, font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = Popup(title='Дополнить книгу (выбор запоминается)', content=box, size_hint=(0.97, 0.9))
+        pop = top_popup('Дополнить книгу', box, dp(420))
+
+        def show_last(*_):
+            last.text = 'Загрузка…'
+            def work(dt):
+                last.text = ctl.last_block(names[spin.text]) or '(книга пуста)'
+                last.cursor = (0, 0)
+            Clock.schedule_once(work, 0.05)
+        spin.bind(text=show_last)
 
         def paste():
             text.text = text.text + (Clipboard.paste() or '')
@@ -556,18 +574,19 @@ class SinevaApp(App):
             if self.ctl.append_to_book(names[spin.text], text.text):
                 pop.dismiss()
 
-        row.add_widget(btn('Вставить из буфера', paste, color=GRAY))
         row.add_widget(btn('Добавить', add))
+        row.add_widget(btn('Вставить', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
-        for w in (spin, text, row):
+        for w in (spin, last, text, row):
             box.add_widget(w)
         pop.open()
+        show_last()
 
     def open_diary(self):
-        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
-        text = TextInput(hint_text='Запись добавится в конец файла dnev.txt (он есть в списке книг)', multiline=True)
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True, font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = Popup(title='В дневник', content=box, size_hint=(0.97, 0.9))
+        pop = top_popup('Дневник', box, dp(300))
 
         def paste():
             text.text = text.text + (Clipboard.paste() or '')
@@ -576,12 +595,13 @@ class SinevaApp(App):
             if self.ctl.add_to_diary(text.text):
                 pop.dismiss()
 
-        row.add_widget(btn('Вставить из буфера', paste, color=GRAY))
         row.add_widget(btn('Записать', add))
+        row.add_widget(btn('Вставить', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
         box.add_widget(text)
         box.add_widget(row)
         pop.open()
+        Clock.schedule_once(lambda dt: setattr(text, 'focus', True), 0.2)
 
     def _on_key(self, window, key, *a):
         if key == 27 and self.sm.current != 'search':       # «Назад» возвращает на поиск

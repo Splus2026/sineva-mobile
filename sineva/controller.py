@@ -11,6 +11,8 @@ from typing import Callable, Dict, List, Optional
 from . import marks as marks_mod
 from . import notes
 from .config import AppConfig
+from .splitter import split_into_sections_by_separator
+from .textio import read_text_file
 from .highlight import build_brief_view_mapped, get_intervals
 from .library import Book, Library
 from .paths import AppPaths
@@ -450,6 +452,20 @@ class Controller:
             return path
         self.on_status("Дневник пока пуст")
         return None
+
+    def last_block(self, file_name: str, max_chars: int = 700) -> str:
+        """Последний топик книги (по её разделителю) — показывается над полем ввода в «Дополнить»."""
+        book = self.library.find(file_name)
+        if book is None:
+            return ''
+        try:
+            sections = split_into_sections_by_separator(read_text_file(book.path).splitlines(), book.separator)
+        except Exception as e:
+            return f"(не удалось прочитать: {e})"
+        if not sections:
+            return ''
+        content = '\n'.join(sections[-1]['lines']).strip()
+        return ('… ' + content[-max_chars:]) if len(content) > max_chars else content
 
     def append_to_book(self, file_name: str, text: str) -> bool:
         book = self.library.find(file_name)

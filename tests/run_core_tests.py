@@ -278,6 +278,11 @@ try:
     check('подчёркивание в окне длинного топика', lc3 and lc['text'][lc3[0][0]:lc3[0][1]].strip().startswith('редкаяфраза'), str(lc3))
     ctl.unmark_selection(lc['key'], 0, len(lc['text']))
 
+    # ---------- последний блок книги для «Дополнить» ----------
+    lb = ctl.last_block('bibl.txt')
+    check('последний блок книги', lb.startswith('5 Новый топик'), repr(lb))
+    check('последний блок: нет книги -> пусто', ctl.last_block('нет.txt') == '')
+
     # ---------- «Дополнить» ----------
     check('цель не задана', ctl.append_target() == '')
     ok = ctl.append_to_book('Грани.txt', '3 Добавленный текст про море.')
