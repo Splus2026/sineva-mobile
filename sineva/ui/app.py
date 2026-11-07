@@ -21,7 +21,7 @@ from kivy.uix.textinput import TextInput
 from .. import __version__
 from ..controller import Controller
 from ..search import escape_markup
-from .picker import pick_files, share_file
+from .picker import add_home_shortcut, pick_files, share_file
 from .textmodel import atom_at, build_markup, sentence_bounds
 
 BG = (0.97, 0.97, 0.98, 1)
@@ -96,22 +96,19 @@ def vlist():
 
 
 class SelectableText(Label):
-    """Текст топика: жёлтый маркер на найденных словах, подчёркнутое, выделение долгим нажатием.
-       Долгое нажатие выделяет слово, не отпуская палец — тянем до нужного места; по отпусканию вызывается
-       on_select(card_key, start, end). Прокрутка списка обычным движением пальца работает как раньше."""
+    """Текст топика: жёлтый маркер на найденных словах, подчёркнутое и выделение.
+       Кнопка «Выделить» под текстом включает режим: нажимаем первое слово, затем последнее — фрагмент выделен,
+       вызывается on_select(card_key, start, end). Прокрутка списка работает как обычно."""
 
-    LONG_PRESS = 0.45
-
-    def __init__(self, card, on_select, **kw):
+    def __init__(self, card, on_select, on_hint=lambda t: None, **kw):
         kw.setdefault('color', (0.05, 0.05, 0.05, 1))
         super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(16), **kw)
         self.card, self.on_select = card, on_select
         self.sel = None
         self.select_mode = False
         self._refs_info = {}
-        self._lp_ev = None
-        self._lp_touch = None
         self._anchor = None
+        self.on_hint = on_hint
         self.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
         self.bind(texture_size=self._on_texture)
         self.bind(pos=lambda *_: self._redraw(), size=lambda *_: self._redraw())
@@ -156,82 +153,42 @@ class SelectableText(Label):
         ty = ts[1] - (pos[1] - (self.center_y - ts[1] / 2.0))
         return atom_at(self._refs_info, self.refs, tx, ty)
 
-    # --- касания
-    def _scroll_parent(self):
-        p = self.parent
-        while p is not None and not hasattr(p, 'do_scroll_y'):
-            p = p.parent
-        return p
-
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos) and not self._lp_ev:
-            self._lp_touch = touch
-            self._start_pos = touch.pos
-            self._lp_ev = Clock.schedule_once(self._long_press, self.LONG_PRESS)
-        return super().on_touch_down(touch)
-
-    def _long_press(self, dt):
-        self._lp_ev = None
-        touch = self._lp_touch
-        if touch is None:
-            return
-        self.select_mode = True
+    # --- выделение касаниями: «Выделить» → нажать первое слово → нажать последнее слово
+    def toggle_select_mode(self):
+        self.select_mode = not self.select_mode
+        self._anchor = None
         self.sel = None
-        self._refresh()
-        self.texture_update()                  # обновляет self.refs сразу — по ним ищем слово под пальцем
-        hit = self._hit(touch.pos)
-        if hit is None:
-            self.select_mode = False
-            self._refresh()
-            return
-        self._anchor = hit
-        self.sel = hit
-        touch.grab(self)
-        sv = self._scroll_parent()
-        if sv is not None:
-            self._sv_prev = sv.do_scroll_y
-            sv.do_scroll_y = False             # пока тянем выделение, список не прокручивается
         self._refresh()
         self.texture_update()
         self._redraw()
+        return self.select_mode
 
-    def on_touch_move(self, touch):
-        if touch.grab_current is self and self._anchor is not None:
-            hit = self._hit(touch.pos)
-            if hit is not None:
-                self.sel = (min(self._anchor[0], hit[0]), max(self._anchor[1], hit[1]))
-                self._refresh()
-                self.texture_update()
-                self._redraw()
-            return True
-        if self._lp_ev and touch is self._lp_touch:
-            dx, dy = touch.pos[0] - self._start_pos[0], touch.pos[1] - self._start_pos[1]
-            if dx * dx + dy * dy > dp(12) ** 2:     # палец поехал — это прокрутка, а не выделение
-                self._lp_ev.cancel()
-                self._lp_ev = None
-        return super().on_touch_move(touch)
-
-    def on_touch_up(self, touch):
-        if self._lp_ev:
-            self._lp_ev.cancel()
-            self._lp_ev = None
-        if touch.grab_current is self:
-            touch.ungrab(self)
-            sv = self._scroll_parent()
-            if sv is not None:
-                sv.do_scroll_y = getattr(self, '_sv_prev', True)
-            sel, self._anchor = self.sel, None
-            self._lp_touch = None
-            if sel and sel[1] > sel[0]:
-                self.on_select(self.card['key'], sel[0], sel[1], self)
-            else:
-                self.clear_selection()
-            return True
-        self._lp_touch = None
-        return super().on_touch_up(touch)
+    def on_ref_press(self, ref):
+        if not self.select_mode:
+            return
+        info = self._refs_info.get(int(ref))
+        if info is None or not self.card['text'][info['start']:info['end']].strip():
+            return
+        word = (info['start'], info['end'])
+        if self._anchor is None:                     # первое касание: начало
+            self._anchor = word
+            self.sel = word
+            self._refresh()
+            self.texture_update()
+            self._redraw()
+            self.on_hint('Теперь нажмите последнее слово фрагмента (или то же слово ещё раз)')
+            return
+        sel = (min(self._anchor[0], word[0]), max(self._anchor[1], word[1]))
+        self._anchor = None
+        self.sel = sel
+        self._refresh()
+        self.texture_update()
+        self._redraw()
+        self.on_select(self.card['key'], sel[0], sel[1], self)
 
     def clear_selection(self):
         self.sel = None
+        self._anchor = None
         self.select_mode = False
         self._refresh()
         self.texture_update()
@@ -284,78 +241,32 @@ class SearchScreen(Screen):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
-        body = SelectableText(c, self.app.on_selection)
+        body = SelectableText(c, self.app.on_selection, self.ctl.on_status)
         key = c['key']
-        more = Button(text='Полностью', size_hint_y=None, height=dp(34), background_normal='',
-                      background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
-        more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
+        row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
+        sel = Button(text='Выделить', background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+
+        def toggle(*_):
+            on = body.toggle_select_mode()
+            sel.text = 'Готово' if on else 'Выделить'
+            if on:
+                self.ctl.on_status('Нажмите первое слово фрагмента')
+        sel.bind(on_release=toggle)
+        row.add_widget(sel)
+        if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
+            more = Button(text='Свернуть' if c['expanded'] else 'Полностью', background_normal='',
+                          background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+            more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
+            row.add_widget(more)
         box.add_widget(head)
         box.add_widget(body)
-        if self.ctl.config.get_bool('brief_view', False):         # кнопка нужна только в кратком виде
-            more.text = 'Свернуть' if c['expanded'] else 'Полностью'
-            box.add_widget(more)
+        box.add_widget(row)
         from kivy.graphics import RoundedRectangle
         with box.canvas.before:
             Color(*CARD)
             rect = RoundedRectangle(radius=[dp(8)])
         box.bind(pos=lambda w, v: setattr(rect, 'pos', v), size=lambda w, v: setattr(rect, 'size', v))
         return box
-
-
-class WordsScreen(Screen):
-    def __init__(self, app, **kw):
-        super().__init__(name='words', **kw)
-        self.ctl = app.ctl
-        root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
-        root.add_widget(mlabel('Совпадения: нажмите слово, чтобы вычеркнуть его из результатов.', font_size=sp(13)))
-        root.add_widget(btn('Вычеркнуть все / вернуть все', self.ctl.exclude_all_words, color=GRAY))
-        self.sv, self.box = vlist()
-        root.add_widget(self.sv)
-        self.add_widget(root)
-        self._labels = {}
-        self.rows, self.dirty, self.limit = [], False, self.CHUNK
-
-    CHUNK = 60
-
-    def show_words(self, rows):
-        """Слов может быть тысячи — виджеты создаём только для видимой части и только когда открыта эта вкладка.
-           Если набор слов не изменился, подписи обновляются на месте: список остаётся там, где был."""
-        self.rows = rows
-        self.dirty = True
-        if self.manager is not None and self.manager.current == 'words':
-            self._render()
-
-    def on_pre_enter(self, *a):
-        if self.dirty:
-            self._render()
-
-    def _more(self):
-        self.limit += self.CHUNK
-        self._render()
-
-    def _render(self):
-        self.dirty = False
-        rows = self.rows[:self.limit]
-        order = [r['word'] for r in rows]
-        if order == list(self._labels):
-            for r in rows:
-                self._labels[r['word']].text = self.ctl.search.word_markup(r)
-            return
-
-        def rebuild():
-            self.box.clear_widgets()
-            self._labels = {}
-            for r in rows:
-                b = Button(markup=True, text=self.ctl.search.word_markup(r), size_hint_y=None, height=dp(40),
-                           background_normal='', background_color=CARD, halign='left')
-                b.bind(size=lambda w, v: setattr(w, 'text_size', (v[0] - dp(12), None)))
-                w = r['word']
-                b.bind(on_release=lambda *_a, w=w: self.ctl.toggle_word(w))
-                self._labels[w] = b
-                self.box.add_widget(b)
-            if len(self.rows) > self.limit:
-                self.box.add_widget(btn(f'Показать ещё слова (всего {len(self.rows)})', self._more, color=GRAY))
-        keep_scroll(self.sv, rebuild)
 
 
 class BooksScreen(Screen):
@@ -385,7 +296,12 @@ class BooksScreen(Screen):
                 self.ctl.index_books(added)
         pick_files(lambda p: Clock.schedule_once(lambda dt: got(p), 0),
                    self.ctl.config.get('picker_start', ''),
-                   lambda uri: self.ctl.set_setting('picker_start', uri))
+                   lambda uri: self.ctl.set_setting('picker_start', uri),
+                   self.ctl.paths.books_dir,
+                   lambda t: Clock.schedule_once(lambda dt: self.ctl.on_status(t), 0))
+
+    def on_pre_enter(self, *a):
+        self.ctl.rescan()                    # вручную скопированные файлы видны сразу
 
     def index_needed(self):
         self.ctl.index_books([r['file_name'] for r in self._rows if r['state'] != 'ready'])
@@ -470,6 +386,8 @@ class SettingsScreen(Screen):
         root.add_widget(btn('Подчёркнутое → Word (DOCX) и поделиться', lambda: self.export('docx'), color=GRAY))
         root.add_widget(btn('Поделиться конспектом', self.share_conspect, color=GRAY))
         root.add_widget(btn('Поделиться дневником', self.share_diary, color=GRAY))
+        root.add_widget(Widget(size_hint_y=None, height=dp(24)))
+        root.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
         self.info = mlabel('', font_size=sp(13))
         root.add_widget(self.info)
         root.add_widget(BoxLayout())
@@ -479,6 +397,9 @@ class SettingsScreen(Screen):
         path = self.ctl.export_marks(fmt)
         if path:
             share_file(path, self.ctl.on_status)
+
+    def add_shortcut(self):
+        add_home_shortcut(self.ctl.on_status)
 
     def share_diary(self):
         path = self.ctl.diary_file()
@@ -509,22 +430,20 @@ class SinevaApp(App):
         self.ctl = Controller(ui_post=ui_post, schedule=schedule)
         self.sm = ScreenManager(transition=NoTransition())
         self.search_s = SearchScreen(self)
-        self.words_s = WordsScreen(self)
         self.books_s = BooksScreen(self)
         self.settings_s = SettingsScreen(self)
-        for s in (self.search_s, self.words_s, self.books_s, self.settings_s):
+        for s in (self.search_s, self.books_s, self.settings_s):
             self.sm.add_widget(s)
         c = self.ctl
         c.on_cards = self.search_s.show_cards
         c.on_status = lambda t: (self.search_s.set_status(t), self.books_s.set_status(t))
-        c.on_words = self.words_s.show_words
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
 
         root = BoxLayout(orientation='vertical')
         root.add_widget(self.sm)
         nav = BoxLayout(size_hint_y=None, height=dp(52))
-        for label, name in (('Поиск', 'search'), ('Слова', 'words'), ('Книги', 'books'), ('Ещё', 'settings')):
+        for label, name in (('Поиск', 'search'), ('Книги', 'books'), ('Ещё', 'settings')):
             b = Button(text=label, background_normal='', background_color=(0.92, 0.93, 0.96, 1), color=ACCENT)
             b.bind(on_release=lambda *_a, n=name: setattr(self.sm, 'current', n))
             nav.add_widget(b)
@@ -534,6 +453,10 @@ class SinevaApp(App):
         if not c.library.books:
             self.sm.current = 'books'
         return root
+
+    def on_resume(self):
+        self.ctl.rescan()
+        return True
 
     # ---------- выделенный фрагмент: автоподчёркивание + меню ----------
     def on_selection(self, key, start, end, widget):

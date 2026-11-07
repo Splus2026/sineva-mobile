@@ -262,6 +262,14 @@ try:
     check('дневник доступен для экспорта', ctl.diary_file() == dn)
     check('пустая запись не пишется', ctl.add_to_diary('   ') is False)
 
+    # вручную скопированный файл виден после тихого обновления; неподдерживаемый формат — сообщение
+    open(os.path.join(paths.books_dir, 'Ручная.txt'), 'w', encoding='utf-8').write('1 Книга скопирована руками.\n')
+    ctl.rescan()
+    check('rescan видит вручную добавленный файл', 'Ручная.txt' in [r['file_name'] for r in got['books']])
+    bad = os.path.join(tmp, 'x.pdf'); open(bad, 'wb').write(b'%PDF')
+    ctl.add_books([bad])
+    check('неподдерживаемый формат: сообщение', 'не поддерживается' in got['status'])
+
     # обновление списков (кнопка ↻)
     with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:
         f.write("1 Новая книга про веру.\n")

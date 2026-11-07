@@ -95,6 +95,12 @@ class Controller:
                          'size_kb': max(1, b.size // 1024)})
         return rows
 
+    def rescan(self) -> None:
+        """Тихо перечитывает папку книг и mconfig.ini: вызывается при открытии вкладки «Книги» и возврате в приложение."""
+        self.library.scan()
+        self.selected &= {b.file_name for b in self.library.books}
+        self.publish_books()
+
     def publish_books(self):
         self.on_books(self.book_rows())
 
@@ -136,6 +142,8 @@ class Controller:
                 b = self.library.add_book_file(p)
                 if b:
                     added.append(b.file_name)
+                else:
+                    self.on_status(f"Формат не поддерживается (нужны .txt или .docx): {os.path.basename(p)}")
             except Exception as e:
                 self.on_status(f"Не удалось добавить {p}: {e}")
         self.publish_books()
@@ -208,7 +216,8 @@ class Controller:
             expanded = key in self.expanded
             cards.append(self._card(i, key, item, brief and not expanded, expanded))
         self.on_cards(cards, len(visible), len(visible) > self.shown)
-        self.on_words(self.search.panel_words(self.outcome))
+        if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
+            self.on_words(self.search.panel_words(self.outcome))
 
     def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
         content = item['content']

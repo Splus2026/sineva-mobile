@@ -8,12 +8,12 @@ DEFAULT_START = "content://com.android.externalstorage.documents/document/primar
 REQUEST_CODE = 7001
 
 
-def pick_files(on_paths, start_uri='', remember=lambda uri: None):
+def pick_files(on_paths, start_uri='', remember=lambda uri: None, dest_dir=None, on_error=lambda text: None):
     """on_paths(list[str]) вызывается с путями файлов, уже доступных приложению для чтения.
        start_uri — откуда открыть окно (по умолчанию «Документы»); remember(uri) — запомнить место последнего выбора."""
     if is_android():
         try:
-            _pick_android(on_paths, start_uri or DEFAULT_START, remember)
+            _pick_android(on_paths, start_uri or DEFAULT_START, remember, dest_dir, on_error)
             return
         except Exception:
             pass
@@ -41,10 +41,52 @@ def pick_files(on_paths, start_uri='', remember=lambda uri: None):
     _desktop_chooser(on_paths)
 
 
-def _pick_android(on_paths, start_uri, remember):
+def copy_uri(uri, dest_dir):
+    """Копирует выбранный документ прямо в папку книг под его настоящим именем (с расширением)."""
+    from jnius import autoclass                        # type: ignore
+    Uri = autoclass('android.net.Uri')
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    resolver = PythonActivity.mActivity.getContentResolver()
+    parsed = Uri.parse(uri)
+    name = None
+    cursor = resolver.query(parsed, None, None, None, None)
+    if cursor is not None:
+        try:
+            idx = cursor.getColumnIndex('_display_name')
+            if idx >= 0 and cursor.moveToFirst():
+                name = cursor.getString(idx)
+        finally:
+            cursor.close()
+    if not name:
+        name = os.path.basename(Uri.decode(uri)) or 'book.txt'
+    name = name.replace('/', '_')
+    stream = resolver.openInputStream(parsed)
+    if stream is None:
+        raise RuntimeError(f"не открывается {name}")
+    dst = os.path.join(dest_dir, name)
+    try:
+        Files = autoclass('java.nio.file.Files')
+        Paths = autoclass('java.nio.file.Paths')
+        Options = autoclass('java.nio.file.StandardCopyOption')
+        Files.copy(stream, Paths.get(dst), [Options.REPLACE_EXISTING])
+    except Exception:
+        # Android 7 (API 24-25): без java.nio.file — копируем блоками через массив байт Java
+        Array = autoclass('java.lang.reflect.Array')
+        buf = Array.newInstance(autoclass('java.lang.Byte').TYPE, 65536)
+        with open(dst, 'wb') as out:
+            while True:
+                n = stream.read(buf)
+                if n <= 0:
+                    break
+                out.write(bytes((b & 0xFF) for b in buf[:n]))
+    finally:
+        stream.close()
+    return dst
+
+
+def _pick_android(on_paths, start_uri, remember, dest_dir, on_error):
     """Системное окно выбора документов (SAF), открытое сразу в нужной папке (EXTRA_INITIAL_URI, Android 8+)."""
     from android import activity                       # type: ignore
-    from androidstorage4kivy import SharedStorage
     from jnius import autoclass, cast                  # type: ignore
     from kivy.clock import Clock
 
@@ -80,15 +122,14 @@ def _pick_android(on_paths, start_uri, remember):
 
         def finish(dt):
             remember(uris[0])                          # следующий раз окно откроется там же
-            ss = SharedStorage()
-            paths = []
+            paths, errors = [], []
             for u in uris:
                 try:
-                    p = ss.copy_from_shared(u)
-                    if p:
-                        paths.append(p)
-                except Exception:
-                    pass
+                    paths.append(copy_uri(u, dest_dir))
+                except Exception as e:
+                    errors.append(str(e))
+            if errors:
+                on_error("Не удалось скопировать: " + "; ".join(errors))
             on_paths(paths)
         Clock.schedule_once(finish, 0)
 
@@ -136,3 +177,37 @@ def share_file(path, status=lambda text: None):
             status(f"Не удалось поделиться: {e}. Файл: {path}")
             return
     status(f"Файл: {path}")
+
+
+def add_home_shortcut(status=lambda text: None):
+    """Просит систему поставить ярлык приложения на главный экран (Android 8+; система покажет подтверждение).
+       Без этого значок виден только в списке приложений — Android сам ярлыки на рабочий стол не создаёт."""
+    if not is_android():
+        status("Ярлык создаётся только на Android")
+        return
+    try:
+        from jnius import autoclass                    # type: ignore
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        ctx = PythonActivity.mActivity
+        Build = autoclass('android.os.Build$VERSION')
+        if Build.SDK_INT < 26:
+            status("На этой версии Android ярлык добавляется вручную: долгое нажатие на значок → «Добавить на главный экран»")
+            return
+        ShortcutManager = autoclass('android.content.pm.ShortcutManager')
+        ShortcutInfoBuilder = autoclass('android.content.pm.ShortcutInfo$Builder')
+        Icon = autoclass('android.graphics.drawable.Icon')
+        manager = ctx.getSystemService(ShortcutManager)
+        if manager is None or not manager.isRequestPinShortcutSupported():
+            status("Лаунчер не поддерживает автоматический ярлык: долгое нажатие на значок приложения → «Добавить на главный экран»")
+            return
+        intent = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName())
+        intent.setAction('android.intent.action.MAIN')
+        info = (ShortcutInfoBuilder(ctx, 'sineva_main')
+                .setShortLabel('Синева+')
+                .setIcon(Icon.createWithResource(ctx, ctx.getApplicationInfo().icon))
+                .setIntent(intent)
+                .build())
+        manager.requestPinShortcut(info, None)
+        status("Подтвердите добавление ярлыка в окне системы")
+    except Exception as e:
+        status(f"Не удалось создать ярлык: {e}")
