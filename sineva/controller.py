@@ -378,6 +378,16 @@ class Controller:
             self._publish()
         return changed
 
+    def toggle_mark(self, key: str, ds: int, de: int, text: str) -> Optional[str]:
+        """Выделение без подтверждений: не подчёркнуто — подчёркиваем и дублируем в конспект;
+           уже подчёркнуто — подчёркивание снимается (конспект не трогаем). Возвращает 'marked' / 'unmarked' / None."""
+        if self.selection_marked(key, ds, de):
+            return 'unmarked' if self.unmark_selection(key, ds, de, publish=False) else None
+        if not self.mark_selection(key, ds, de, publish=False):
+            return None
+        self.quote_to_conspect(key, text)
+        return 'marked'
+
     def quote_to_conspect(self, key: str, text: str) -> None:
         """«В конспект»: цитата + источник — в файл 0_Конспект.txt (формат как на ПК)."""
         item = self._find_item(key)

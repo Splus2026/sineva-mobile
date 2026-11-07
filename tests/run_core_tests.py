@@ -247,6 +247,18 @@ try:
     check('снятие со всего', ctl.marks.all_marks() == [])
     check('экспорт без отметок -> None', ctl.export_marks('txt') is None)
 
+    # ---------- выделение без подтверждений ----------
+    ctl.config.set('page_size', 50)
+    ctl.submit_query('любовь')
+    tc = got['cards'][0]; tt = tc['text']; ti = tt.index('любовь')
+    before = open(paths.conspect_path, encoding='utf-8').read()
+    check('новое выделение -> marked', ctl.toggle_mark(tc['key'], ti, ti + 6, 'любовь') == 'marked')
+    after = open(paths.conspect_path, encoding='utf-8').read()
+    check('в конспект: с новой строки и семиточием', after[len(before):].startswith('.......любовь\n') or after[len(before):].startswith('\n.......любовь\n'), repr(after[len(before):]))
+    check('подчёркивание видно', ctl.card_marks(tc['key']) != [])
+    check('повторное выделение -> unmarked', ctl.toggle_mark(tc['key'], ti, ti + 6, 'любовь') == 'unmarked')
+    check('подчёркивание снято, конспект не тронут', ctl.card_marks(tc['key']) == [] and open(paths.conspect_path, encoding='utf-8').read() == after)
+
     # ---------- длинные топики окнами ----------
     big_book = os.path.join(paths.books_dir, 'Длинная.txt')
     open(big_book, 'w', encoding='utf-8').write('1 ' + ' '.join(f'слово{i}' for i in range(3000)) + ' редкаяфраза в конце ' + ' '.join(f'хвост{i}' for i in range(500)) + '\n')

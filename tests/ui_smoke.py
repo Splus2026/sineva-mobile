@@ -83,10 +83,10 @@ def _apply():
 w._apply = _apply
 w._tap((12, 5))                       # первое касание: слово
 first = w.sel
-w._tap((32, 5))                       # второе касание: конец фрагмента -> окно подтверждения
+w._tap((32, 5))                       # второе касание: конец фрагмента -> сразу подчёркивание
 print('выделено касаниями:', first, '->', w.sel)
 app.search_s._activate(w)
-app.zoom(1.3); app.zoom(0.5)
+app.change_font(+1); app.change_font(-8); app.settings_s.toggle_share(); app.settings_s.toggle_share(); app.settings_s.font(1)
 print('шрифт:', c.config.get_int('font_size', 0))
 print('отмечено:', c.selection_marked(cards[0]['key'], 0, 4), c.card_marks(cards[0]['key']))
 app.books_s.on_pre_enter(); app.on_resume(); app.settings_s.add_shortcut()

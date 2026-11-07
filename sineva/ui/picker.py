@@ -193,25 +193,27 @@ def add_home_shortcut(status=lambda text: None):
         status("Ярлык создаётся только на Android")
         return
     try:
-        from jnius import autoclass                    # type: ignore
+        from jnius import autoclass, cast              # type: ignore
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         ctx = PythonActivity.mActivity
         Build = autoclass('android.os.Build$VERSION')
         if Build.SDK_INT < 26:
             status("На этой версии Android ярлык добавляется вручную: долгое нажатие на значок → «Добавить на главный экран»")
             return
-        ShortcutManager = autoclass('android.content.pm.ShortcutManager')
+        Context = autoclass('android.content.Context')
         ShortcutInfoBuilder = autoclass('android.content.pm.ShortcutInfo$Builder')
         Icon = autoclass('android.graphics.drawable.Icon')
-        manager = ctx.getSystemService(ShortcutManager)
+        context = cast('android.content.Context', ctx)
+        # getSystemService — по имени службы (строкой): перегрузка по классу путает pyjnius
+        manager = cast('android.content.pm.ShortcutManager', context.getSystemService(Context.SHORTCUT_SERVICE))
         if manager is None or not manager.isRequestPinShortcutSupported():
             status("Лаунчер не поддерживает автоматический ярлык: долгое нажатие на значок приложения → «Добавить на главный экран»")
             return
-        intent = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName())
+        intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName())
         intent.setAction('android.intent.action.MAIN')
-        info = (ShortcutInfoBuilder(ctx, 'sineva_main')
+        info = (ShortcutInfoBuilder(context, 'sineva_main')
                 .setShortLabel('Синева+')
-                .setIcon(Icon.createWithResource(ctx, ctx.getApplicationInfo().icon))
+                .setIcon(Icon.createWithResource(context, context.getApplicationInfo().icon))
                 .setIntent(intent)
                 .build())
         manager.requestPinShortcut(info, None)
