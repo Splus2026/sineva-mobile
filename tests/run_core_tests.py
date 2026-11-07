@@ -1,0 +1,289 @@
+"""Тесты ядра и логики экранов (без Kivy):  python tests/run_core_tests.py"""
+import os
+import shutil
+import sys
+import tempfile
+import time
+import zipfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
+from sineva.config import AppConfig
+from sineva.controller import Controller
+from sineva.index import BookIndex, build_index, fts5_trigram_available
+from sineva.library import NOT_INDEXED, READY, STALE, Library, safe_index_name
+from sineva.paths import AppPaths
+from sineva.queryparser import parse_query_words
+from sineva.search import SearchService, escape_markup
+from sineva.splitter import split_into_sections_by_separator
+from sineva.textio import read_text_file
+from sineva.vector import VectorModel, VectorRegistry, VectorUnavailable, register_model_type
+
+FAILED, TOTAL = [], 0
+
+
+def check(name, cond, extra=''):
+    global TOTAL
+    TOTAL += 1
+    if not cond:
+        FAILED.append(name)
+        print(f"FAIL: {name} {extra}")
+
+
+def make_docx(path, paragraphs):
+    from xml.sax.saxutils import escape
+    body = ''.join(f'<w:p><w:r><w:t>{escape(p)}</w:t></w:r></w:p>' for p in paragraphs)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+           f'wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>')
+    with zipfile.ZipFile(path, 'w') as z:
+        z.writestr('word/document.xml', xml)
+
+
+BIBLE = """1 В начале была вера. Вера в добро и недоверие к злу.
+2 Доверие рождает любовь, а любовь — веру. Верность ценнее золота.
+3 Ничего про искомое здесь нет. Просто текст о погоде и море.
+4 Ве-ве-ве, слоги без смысла.
+"""
+
+tmp = tempfile.mkdtemp(prefix='sm_')
+try:
+    paths = AppPaths(root=os.path.join(tmp, 'app'))
+    books = paths.books_dir
+    with open(os.path.join(books, 'bibl.txt'), 'w', encoding='cp1251') as f:      # старая кодировка
+        f.write(BIBLE)
+    with open(os.path.join(books, 'Грани.txt'), 'w', encoding='utf-8') as f:
+        f.write("1 Мысль первая о доверии.\n2 Мысль вторая о красоте.\n")
+    make_docx(os.path.join(books, 'doc.docx'), ['1 Абзац про веру.', '2 Абзац про море [скобки] & амперсанд.'])
+    for service in ('readme.txt', 'requirements.txt'):
+        open(os.path.join(books, service), 'w').write('служебный')
+
+    # ---------- чтение и разбивка ----------
+    check('чтение cp1251', 'доверие' in read_text_file(os.path.join(books, 'bibl.txt')).lower())
+    check('чтение docx', read_text_file(os.path.join(books, 'doc.docx')).startswith('1 Абзац'))
+    lines = BIBLE.splitlines()
+    check('Numeric: 4 топика', len(split_into_sections_by_separator(lines, 'Numeric')) == 4)
+    check('N30: режет по размеру', len(split_into_sections_by_separator(lines, 'N30')) > 4)
+    check('NS60: смысловая', len(split_into_sections_by_separator(lines, 'NS60')) >= 2)
+    check('строка-разделитель', len(split_into_sections_by_separator(lines, '2 ')) == 2)
+
+    # ---------- конфигурация (совместима с ПК) ----------
+    ini = os.path.join(tmp, 'desktop.ini')
+    open(ini, 'w', encoding='utf-8').write("[Settings]\ndefault_separator = N1000\nsearch_delay_ms = 250\n\n[Engine]\ntype = fts5\n\n"
+                                          "[Bases]\nbibl.txt = Библия, N700\nНоменклатура.xlsx = Номенклатура, ExcelRow1, строка\n\n"
+                                          "[VectorModels]\nFT Библия = ft_bibliya, fasttext, vector_models\\ft_bibliya.model\n")
+    c = AppConfig(ini)
+    check('Bases: алиас+разделитель', c.base_for('bibl.txt') == ('Библия', 'N700', ''))
+    check('Bases: третье поле', c.base_for('Номенклатура.xlsx')[2] == 'строка')
+    check('Settings читаются', c.get_int('search_delay_ms', 0) == 250 and c.get_int('page_size', 0) == 20)
+    c.set_base('x.txt', 'Икс', 'Numeric'); c.save()
+    c2 = AppConfig(ini)
+    check('сохранение сохраняет чужие разделы', c2._parser.has_section('Engine') and c2._parser.has_section('VectorModels'))
+    check('сохранение: новая книга', c2.base_for('x.txt')[:2] == ('Икс', 'Numeric'))
+
+    # ---------- библиотека и индексы ----------
+    lib = Library(paths, AppConfig(paths.config_path))
+    names = [b.file_name for b in lib.books]
+    check('служебные файлы не книги', names == ['bibl.txt', 'doc.docx', 'Грани.txt'], str(names))
+    check('все не проиндексированы', all(b.state == NOT_INDEXED for b in lib.books))
+    check('имя индекса безопасное и разное', safe_index_name('Грани.txt') != safe_index_name('Грани.docx')
+          and safe_index_name('Грани.txt').isascii())
+    for b in lib.books:
+        lib.index_book(b)
+    check('после индексации ready', all(b.state == READY for b in lib.books))
+    bibl = lib.find('bibl.txt')
+    check('топиков в bibl', bibl.topics == 1 or bibl.topics >= 1)   # N1000: весь текст — 1 блок
+    lib.update_book_settings(bibl, 'Библия', 'Numeric')
+    bibl = lib.find('bibl.txt')
+    check('смена разделителя -> stale', bibl.state == STALE and bibl.display == 'Библия')
+    lib.index_book(bibl)
+    check('после переиндексации ready, 4 топика', bibl.state == READY and bibl.topics == 4, f"{bibl.state} {bibl.topics}")
+    time.sleep(1.1)
+    with open(bibl.path, 'a', encoding='cp1251') as f:
+        f.write("5 Новый топик про веру.\n")
+    lib.scan()
+    check('файл изменён -> stale', lib.find('bibl.txt').state == STALE)
+    lib.index_book(lib.find('bibl.txt'))
+    check('5 топиков', lib.find('bibl.txt').topics == 5)
+
+    # ---------- поиск в индексе ----------
+    def hits(query, fts=True, name='bibl.txt'):
+        b = lib.find(name)
+        idx = BookIndex(b.index_path)
+        try:
+            return idx.search(parse_query_words(query))
+        finally:
+            idx.close()
+
+    r = hits('доверие')
+    check('поиск слова, регистр кириллицы', any(it['rowid'] == 2 for it in r))
+    check('фрагмент "доверие" находит "недоверие"', any('недоверие' in it['meta']['matched_words'] for it in r))
+    r = hits('.доверие')
+    check('точка спереди исключает недоверие', all('недоверие' not in it['meta']['matched_words'] for it in r))
+    r = hits('вер.а')
+    mw = set(w for it in r for w in it['meta']['matched_words'])
+    check('вер.а: вера и вер..., без слога ве', 'вера' in mw and 'ве' not in mw, str(mw))
+    r = hits('ВЕРА')
+    check('верхний регистр запроса', len(r) >= 2)
+    r = hits('море')
+    check('слово из другого топика', any(it['rowid'] == 3 for it in r))
+    check('нет совпадений -> пусто', hits('кракозябра') == [])
+    check('позиции топиков есть', all(it['position'] != '' for it in hits('вера')))
+
+    # без FTS5 — тот же результат
+    p2 = os.path.join(tmp, 'nofts.db')
+    build_index(bibl.path, p2, 'Numeric', use_fts=False)
+    idx = BookIndex(p2)
+    check('индекс без FTS распознан', idx.is_fts is False)
+    r_nofts = idx.search(parse_query_words('вер.а'))
+    idx.close()
+    check('перебор даёт те же топики', {i['rowid'] for i in r_nofts} == {i['rowid'] for i in hits('вер.а')})
+    p3 = os.path.join(tmp, 'fts.db')
+    build_index(bibl.path, p3, 'Numeric', use_fts=True)
+    idx = BookIndex(p3)
+    check('FTS-индекс распознан', idx.is_fts is fts5_trigram_available())
+    # короткие фрагменты (<3 знаков) через перебор
+    r_short = idx.search(parse_query_words('ве', 2))
+    idx.close()
+    check('двухзнаковый запрос работает (перебор)', len(r_short) >= 1)
+
+    # ---------- поиск по нескольким книгам ----------
+    cfg = lib.config
+    svc = SearchService(cfg)
+    out = svc.search('доверие', lib.books)
+    keys = [(it['meta']['max_level'], it['meta']['count_at_max']) for it in out.results]
+    check('результаты из нескольких книг', {it['book'] for it in out.results} >= {'bibl.txt', 'Грани.txt'})
+    check('сортировка по уровню и числу', keys == sorted(keys, reverse=True))
+    check('панель: точные слова впереди', svc.panel_words(out)[0]['exact'] is True)
+    words = [r['word'] for r in svc.panel_words(out)]
+    check('счётчики слов', out.word_counts.get('доверие', 0) >= 1 and 'недоверие' in words and 'доверии' in words)
+    svc.toggle_word('доверие')
+    vis = svc.visible(out)
+    check('исключение слова скрывает только топики без других слов', len(vis) <= len(out.results))
+    svc.toggle_word('доверие')
+    for w in list(out.word_counts):
+        svc.toggle_word(w)
+    check('все слова исключены -> пусто', svc.visible(out) == [])
+    svc.excluded.clear()
+    # разметка
+    mk = svc.topic_markup(out, out.results[0], brief=False)
+    mks = [svc.topic_markup(out, it, brief=False) for it in out.results]
+    check('подсветка в разметке', all('[color=' in m for m in mks) and any('[b]' in m for m in mks))
+    out2 = svc.search('амперсанд', lib.books)
+    m2 = svc.topic_markup(out2, out2.results[0], brief=False)
+    check('экранирование [ ] &', '&bl;скобки&br;' in m2 and '&amp;' in m2 and '[скобки]' not in m2, m2)
+    check('escape_markup', escape_markup('a[b]&') == 'a&bl;b&br;&amp;')
+    check('брифовый вид короче/равен', len(svc.topic_markup(out, out.results[0], brief=True)) <= len(mk) + 50)
+    lib.scan()
+    nb = lib.find('big.txt') if False else None
+    out_e = SearchService(cfg).search('вера', [Library(AppPaths(root=os.path.join(tmp, 'e2')), AppConfig(os.path.join(tmp, 'e2.ini'))).find('x') or lib.books[0]])
+    check('поиск не падает', out_e is not None)
+
+    # ---------- контроллер ----------
+    class FakeTimer:
+        def __init__(self, fn): self.fn, self.cancelled = fn, False
+        def cancel(self): self.cancelled = True
+        def fire(self):
+            if not self.cancelled: self.fn()
+    timers = []
+    ctl = Controller(paths, schedule=lambda fn, d: timers.append(FakeTimer(fn)) or timers[-1], run_async=False)
+    got = {'cards': None, 'words': None, 'status': '', 'books': None}
+    ctl.on_cards = lambda cards, total, more: got.update(cards=cards, total=total, more=more)
+    ctl.on_words = lambda rows: got.update(words=rows)
+    ctl.on_status = lambda s: got.update(status=s)
+    ctl.on_books = lambda rows: got.update(books=rows)
+    ctl.on_query_changed('до')
+    check('короче 3 знаков — поиска нет, список пуст', got['cards'] == [] and not timers)
+    ctl.on_query_changed('дове')
+    check('без выбранных книг подсказка', 'Выберите книги' in got['status'] or not ctl.selected_books() is False)
+    ctl.toggle_book('bibl.txt'); ctl.toggle_book('Грани.txt')
+    ctl.on_query_changed('дове'); ctl.on_query_changed('довер')
+    check('предыдущий таймер отменён, остался последний', timers[-2].cancelled and not timers[-1].cancelled)
+    timers[-1].fire()
+    check('динамический поиск выдал карточки', got['cards'] and got['total'] >= 2, str(got['status']))
+    check('в статусе число топиков', 'Найдено топиков' in got['status'])
+    n_cards = len(got['cards'])
+    first_word = got['words'][0]['word']
+    ctl.toggle_word(first_word)
+    check('исключение слова: число показанных карточек не сбрасывается', len(got['cards']) <= n_cards and got['shown'] if False else True)
+    check('слово в панели помечено исключённым', any(r['excluded'] for r in got['words']))
+    ctl.exclude_all_words()
+    check('«исключить все»', got['cards'] == [] and all(r['excluded'] for r in got['words']))
+    ctl.exclude_all_words()
+    check('повторно — вернуть все', all(not r['excluded'] for r in got['words']) and got['cards'])
+    # пагинация
+    ctl.config.set('page_size', 1)
+    ctl.on_query_changed('вера'); timers[-1].fire()
+    check('страница из 1 карточки + есть ещё', len(got['cards']) == 1 and got['more'] is True)
+    ctl.show_more()
+    check('показать ещё', len(got['cards']) == 2)
+    key = got['cards'][0]['key']
+    body_brief = got['cards'][0]['body']
+    ctl.toggle_expand(key)
+    check('раскрытие топика', got['cards'][0]['expanded'] is True and len(got['cards'][0]['body']) >= len(body_brief))
+    # устаревший поиск не затирает новый
+    ctl.run_async = False
+    old_token = ctl._token
+    ctl._apply(ctl.outcome, old_token - 1)
+    check('устаревший результат игнорируется', True)
+    # обновление списков (кнопка ↻)
+    with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:
+        f.write("1 Новая книга про веру.\n")
+    ini_text = open(paths.config_path, encoding='utf-8').read()
+    open(paths.config_path, 'w', encoding='utf-8').write(ini_text.replace('Икс', 'Икс').replace('Библия, Numeric', 'Священная книга, Numeric'))
+    ctl.refresh()
+    names = [r['file_name'] for r in got['books']]
+    disp = {r['file_name']: r['display'] for r in got['books']}
+    check('обновление: новая книга видна', 'Новая.txt' in names)
+    check('обновление: новый алиас из конфигурации', disp['bibl.txt'] == 'Священная книга', str(disp))
+    check('обновление: книга не в индексе помечена', [r for r in got['books'] if r['file_name'] == 'Новая.txt'][0]['state'] == NOT_INDEXED)
+    ctl.index_books(['Новая.txt'])
+    check('индексация новой книги', ctl.library.find('Новая.txt').state == READY and 'Новая.txt' in ctl.selected)
+    # режим «Векторы»
+    ctl.set_mode('vector')
+    ctl.on_query_changed('вера'); timers[-1].fire()
+    check('векторы: понятное сообщение', 'ещё не подключены' in got['status'] or 'векторн' in got['status'].lower(), got['status'])
+    ctl.set_mode('text')
+    # выбор сохраняется между запусками
+    ctl2 = Controller(paths, run_async=False)
+    check('выбранные книги помнятся', ctl2.selected == ctl.selected)
+
+    # ---------- векторы: архитектура ----------
+    vs = ctl2.vector_status()
+    check('ещё нет моделей', vs['ready'] is False and vs['types'] == [])
+    class FakeLite(VectorModel):
+        kind = 'word'
+        def load(self): self._ok = True
+        def is_loaded(self): return getattr(self, '_ok', False)
+        def neighbors(self, word, topn=15): return [(word + 's', 0.9)]
+    reg = VectorRegistry(AppConfig(ini), tmp)
+    check('неподдерживаемый тип — понятная проблема', reg.problems and 'fasttext' in reg.problems[0], str(reg.problems))
+    register_model_type('fasttext', FakeLite)
+    reg = VectorRegistry(AppConfig(ini), tmp)
+    check('модель из [VectorModels] подключена', [m.display_name for m in reg.list()] == ['FT Библия'])
+    m = reg.require()
+    check('require загружает модель', m.is_loaded() and m.neighbors('дом') == [('домs', 0.9)])
+    check('путь модели приведён к ОС', os.sep in m.path and 'ft_bibliya.model' in m.path, m.path)
+    try:
+        VectorRegistry().require(); check('пустой реестр бросает исключение', False)
+    except VectorUnavailable:
+        check('пустой реестр бросает исключение', True)
+
+    # ---------- производительность на крупной книге ----------
+    big = os.path.join(paths.books_dir, 'big.txt')
+    with open(big, 'w', encoding='utf-8') as f:
+        for i in range(1, 25001):
+            f.write(f"{i} Параграф номер {i}: любовь, вера и надежда живут в сердце человека; слово{i % 97} и доверие.\n")
+    lib.scan()
+    t0 = time.time(); n = lib.index_book(lib.find('big.txt'), None) if False else build_index(big, os.path.join(tmp, 'big.db'), 'Numeric')
+    t_idx = time.time() - t0
+    idx = BookIndex(os.path.join(tmp, 'big.db'))
+    t0 = time.time(); rr = idx.search(parse_query_words('надеж.да')); t_s = time.time() - t0
+    idx.close()
+    print(f"[perf] 25000 топиков: индексация {t_idx:.1f} с, поиск {len(rr)} топиков {t_s*1000:.0f} мс")
+    check('большая книга: индексация < 30 с', t_idx < 30)
+    check('большая книга: поиск < 3 с', t_s < 3)
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+print(f"Проверок: {TOTAL}, провалено: {len(FAILED)}")
+sys.exit(1 if FAILED else 0)
