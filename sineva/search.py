@@ -27,6 +27,8 @@ class SearchOutcome:
     results: List[dict] = field(default_factory=list)    # все топики, отсортированные от лучшего
     word_counts: Dict[str, int] = field(default_factory=dict)   # совпавшее слово -> в скольких топиках
     elapsed_ms: float = 0.0
+    index_ms: float = 0.0                                # из них — выборка и сопоставление по индексам
+    modes: set = field(default_factory=set)              # 'FTS' / 'перебор' — как реально искали
     errors: List[str] = field(default_factory=list)
     mode: str = 'text'
 
@@ -38,7 +40,8 @@ class SearchService:
         self.excluded: Set[str] = set()
 
     # ---------- поиск ----------
-    def search(self, query: str, books: List[Book], mode: str = 'text', cancelled=None) -> SearchOutcome:
+    def search(self, query: str, books: List[Book], mode: str = 'text', cancelled=None,
+               count_words: bool = True) -> SearchOutcome:
         """cancelled — функция без аргументов: True, если пользователь уже изменил запрос (поиск бросается)."""
         out = SearchOutcome(query=query, mode=mode)
         t0 = time.time()
@@ -59,7 +62,11 @@ class SearchService:
             idx = None
             try:
                 idx = BookIndex(book.index_path)
-                for item in idx.search(out.words_info, limit, cancelled):
+                out.modes.add('FTS' if idx.is_fts else 'перебор')
+                t_idx = time.time()
+                found = idx.search(out.words_info, limit, cancelled)
+                out.index_ms += (time.time() - t_idx) * 1000
+                for item in found:
                     item['book'] = book.file_name
                     item['book_display'] = book.display
                     out.results.append(item)
@@ -70,7 +77,8 @@ class SearchService:
                     idx.close()
         # лучший уровень совпадения, затем число совпадений на этом уровне (как в Синеве+)
         out.results.sort(key=lambda it: (it['meta']['max_level'], it['meta']['count_at_max']), reverse=True)
-        out.word_counts = self._count_words(out.results)
+        if count_words:
+            out.word_counts = self._count_words(out.results)
         out.elapsed_ms = (time.time() - t0) * 1000
         return out
 

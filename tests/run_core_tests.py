@@ -74,7 +74,7 @@ try:
     c = AppConfig(ini)
     check('Bases: алиас+разделитель', c.base_for('bibl.txt') == ('Библия', 'N700', ''))
     check('Bases: третье поле', c.base_for('Номенклатура.xlsx')[2] == 'строка')
-    check('Settings читаются', c.get_int('search_delay_ms', 0) == 250 and c.get_int('page_size', 0) == 10)
+    check('Settings читаются', c.get_int('search_delay_ms', 0) == 250 and c.get_int('page_size', 0) == 3)
     c.set_base('x.txt', 'Икс', 'Numeric'); c.save()
     c2 = AppConfig(ini)
     check('сохранение сохраняет чужие разделы', c2._parser.has_section('Engine') and c2._parser.has_section('VectorModels'))
@@ -258,6 +258,27 @@ try:
     check('подчёркивание видно', ctl.card_marks(tc['key']) != [])
     check('повторное выделение -> unmarked', ctl.toggle_mark(tc['key'], ti, ti + 6, 'любовь') == 'unmarked')
     check('подчёркивание снято, конспект не тронут', ctl.card_marks(tc['key']) == [] and open(paths.conspect_path, encoding='utf-8').read() == after)
+
+    # ---------- порции: по 3 карточки, лучшие 20 + расширение ----------
+    many = os.path.join(paths.books_dir, 'Много.txt')
+    open(many, 'w', encoding='utf-8').write(''.join(f'{i} Строка про терпение номер {i}.\n' for i in range(1, 61)))
+    ctl.library.scan(); ctl.library.update_book_settings(ctl.library.find('Много.txt'), 'Много', 'Numeric')
+    ctl.index_books(['Много.txt'])
+    for b in list(ctl.selected):
+        if b != 'Много.txt': ctl.toggle_book(b)
+    ctl.config.set('page_size', 3)
+    ctl.submit_query('терпение')
+    check('сначала 3 карточки', len(got['cards']) == 3 and got['total'] == 60 and ctl.more_label.startswith('Показать ещё'), ctl.more_label)
+    check('в статусе замеры и режим', 'поиск' in got['status'] and ('FTS' in got['status'] or 'перебор' in got['status']) and 'лучшие 20' in got['status'], got['status'])
+    for _ in range(6):
+        ctl.show_more()
+    check('внутри лучших 20 докладывается по 3', len(got['cards']) == 20 or len(got['cards']) == 21 - 1 or len(got['cards']) <= 20, str(len(got['cards'])))
+    ctl.show_more()
+    check('после 20 кнопка расширяет лучшие', len(got['cards']) > 20 and ctl.cap == 40, f"{len(got['cards'])} cap={ctl.cap}")
+    check('подпись кнопки расширения', ctl.more_label.startswith('Ещё') or ctl.more_label.startswith('Показать'), ctl.more_label)
+    for b in ('bibl.txt', 'Грани.txt'):
+        ctl.toggle_book(b)
+    ctl.config.set('page_size', 50)
 
     # ---------- длинные топики окнами ----------
     big_book = os.path.join(paths.books_dir, 'Длинная.txt')

@@ -1,4 +1,6 @@
 """Интерфейс «Синева+ Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
+import time
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
@@ -246,6 +248,8 @@ class SearchScreen(Screen):
         self.status.color = GRAY
         self.sv, self.box = vlist()
         self._active = None
+        self._suffix = ''
+        self._base = ''
         root.add_widget(top)
         root.add_widget(self.status)
         root.add_widget(self.sv)
@@ -256,18 +260,31 @@ class SearchScreen(Screen):
         self.ctl.submit_query(self.input.text)
 
     def set_status(self, text):
-        self.status.text = escape_markup(text)
+        if not text.startswith('Найдено'):
+            self._suffix = ''
+        self._base = text
+        self.status.text = escape_markup(text + self._suffix)
 
     def show_cards(self, cards, total, more):
+        t0 = time.time()
+        self._suffix = ''
+
         def rebuild():
             self.box.clear_widgets()
             for c in cards:
                 self.box.add_widget(self._card(c))
             if more:
-                self.box.add_widget(btn(f'Показать ещё (всего {total})', self.ctl.show_more))
+                self.box.add_widget(btn(self.ctl.more_label or f'Показать ещё (всего {total})', self.ctl.show_more))
             elif not cards and self.ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
         keep_scroll(self.sv, rebuild)
+        built = (time.time() - t0) * 1000
+
+        def done(dt):                                      # после первого кадра: виджеты созданы, текстуры нарисованы
+            total_ms = (time.time() - t0) * 1000
+            self._suffix = f" · карточки: {built:.0f} мс, с отрисовкой {total_ms:.0f} мс"
+            self.status.text = escape_markup(self._base + self._suffix)
+        Clock.schedule_once(lambda dt: Clock.schedule_once(done, 0.05), 0)
 
     def _activate(self, widget):
         if self._active is not None and self._active is not widget:

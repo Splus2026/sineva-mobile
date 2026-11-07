@@ -44,6 +44,8 @@ class Controller:
         self.query = ''
         self.outcome = SearchOutcome()
         self.shown = 0
+        self.cap = 0                           # сколько «лучших» топиков сейчас доступно (растёт кнопкой)
+        self.more_label = ''
         self.offsets = {}                       # ключ топика -> с какого символа показывается окно длинного текста
         self.expanded = set()                   # ключи раскрытых (полный текст) топиков
         self.selected = self._load_selected()
@@ -190,7 +192,8 @@ class Controller:
             return
 
         def work():
-            outcome = self.search.search(text, books, self.mode, cancelled=lambda: token != self._token)
+            outcome = self.search.search(text, books, self.mode, cancelled=lambda: token != self._token,
+                                         count_words=self.on_words is not _noop)
             if token == self._token:
                 self.ui_post(lambda: self._apply(outcome, token))
         self._run(work)
@@ -199,7 +202,8 @@ class Controller:
         if token != self._token:
             return
         self.outcome = outcome
-        self.shown = self.config.get_int('page_size', 20)
+        self.shown = self.config.get_int('page_size', 3)
+        self.cap = self.config.get_int('best_step', 20)
         self.expanded.clear()
         self.offsets.clear()
         self._publish()
@@ -207,19 +211,30 @@ class Controller:
         if outcome.errors and not outcome.results:
             self.on_status('; '.join(outcome.errors))
         else:
-            self.on_status(f"Найдено топиков: {visible} · {outcome.elapsed_ms:.0f} мс"
+            mode = '/'.join(sorted(outcome.modes)) or '—'
+            self.on_status(f"Найдено топиков: {visible}, лучшие {min(visible, self.cap)} · поиск {outcome.elapsed_ms:.0f} мс "
+                           f"(индекс {outcome.index_ms:.0f} мс, {mode})"
                            + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
 
     # ================= результаты =================
     def _publish(self) -> None:
         visible = self.search.visible(self.outcome)
         brief = self.config.get_bool('brief_view', False)
+        limit = min(len(visible), self.cap)                 # «лучшие N»: остальные — по кнопке
+        count = min(self.shown, limit)
         cards = []
-        for i, item in enumerate(visible[:self.shown]):
+        for i, item in enumerate(visible[:count]):
             key = f"{item['book']}:{item['rowid']}"
             expanded = key in self.expanded
             cards.append(self._card(i, key, item, brief and not expanded, expanded))
-        self.on_cards(cards, len(visible), len(visible) > self.shown)
+        step = self.config.get_int('best_step', 20)
+        if count < limit:
+            self.more_label = f"Показать ещё {min(self.config.get_int('page_size', 3), limit - count)}"
+        elif len(visible) > limit:
+            self.more_label = f"Ещё {min(step, len(visible) - limit)} лучших (всего {len(visible)})"
+        else:
+            self.more_label = ''
+        self.on_cards(cards, len(visible), bool(self.more_label))
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
 
@@ -486,7 +501,11 @@ class Controller:
         return True
 
     def show_more(self) -> None:
-        self.shown += self.config.get_int('page_size', 20)
+        """Сначала дорисовываются карточки внутри лучших N, потом лучшие расширяются на best_step."""
+        visible = len(self.search.visible(self.outcome))
+        if self.shown >= min(visible, self.cap):
+            self.cap += self.config.get_int('best_step', 20)
+        self.shown += self.config.get_int('page_size', 3)
         self._publish()
 
     def toggle_expand(self, key: str) -> None:
