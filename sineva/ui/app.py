@@ -333,7 +333,7 @@ class BooksScreen(Screen):
         fn = r['file_name']
         cb.bind(active=lambda w, v, fn=fn: self.ctl.toggle_book(fn) if v != self.ctl.is_selected(fn) else None)
         info = mlabel(f"[b]{escape_markup(r['display'])}[/b]\n[size=12sp][color=777777]"
-                      f"{escape_markup(r['status'])} · {r['separator']}[/color][/size]")
+                      f"{escape_markup(r['status'])} · {r['separator']} · {r['size_kb']} КБ[/color][/size]")
         info.size_hint_y = 1
         info.bind(height=lambda *_: None)
         edit = Button(text='⚙', size_hint_x=None, width=dp(48), background_normal='', background_color=GRAY)

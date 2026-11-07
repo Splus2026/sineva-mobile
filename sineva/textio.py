@@ -115,10 +115,25 @@ def read_text_file(file_path: str, keep_empty_docx_paragraphs: bool = True) -> s
             paragraphs = [p for p in paragraphs if p.strip()]
         return "\n".join(paragraphs)
 
+    with open(file_path, 'rb') as f:
+        raw = f.read()
+    return decode_text(raw)
+
+
+def decode_text(raw: bytes) -> str:
+    """Текст из байт: BOM (UTF-8/UTF-16 из «Блокнота»), затем utf-8, cp1251, latin-1, koi8-r."""
+    if raw.startswith(b'\xef\xbb\xbf'):
+        return raw[3:].decode('utf-8', errors='replace')
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return raw.decode('utf-16', errors='replace')
+    if b'\x00' in raw[:4096]:                       # UTF-16 без BOM: нули через байт
+        try:
+            return raw.decode('utf-16-le' if raw[1:2] == b'\x00' else 'utf-16-be')
+        except UnicodeDecodeError:
+            pass
     for enc in TEXT_ENCODINGS:
         try:
-            with open(file_path, 'r', encoding=enc) as f:
-                return f.read()
+            return raw.decode(enc)
         except UnicodeDecodeError:
             continue
     raise Exception("Не удалось прочитать файл ни в одной из кодировок.")

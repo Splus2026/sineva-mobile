@@ -40,6 +40,8 @@ def build_index(source_path: str, index_path: str, separator: str,
     """Читает книгу, режет на топики и записывает индекс. Пишет во временный файл и заменяет им старый —
        прерванная индексация не оставляет испорченного индекса. Возвращает число топиков."""
     text = read_text_file(source_path)
+    if not text.strip():
+        raise ValueError("файл пуст или в нём нет текста")
     lines = text.splitlines(keepends=False)
     sections = split_into_sections_by_separator(lines, separator)
     if use_fts is None:

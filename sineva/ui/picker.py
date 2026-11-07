@@ -1,5 +1,6 @@
 """Выбор файлов-книг: на Android — системный выбор (SAF) через androidstorage4kivy, на ПК — окно Kivy."""
 import os
+import shutil
 
 from ..paths import is_android
 
@@ -60,27 +61,33 @@ def copy_uri(uri, dest_dir):
     if not name:
         name = os.path.basename(Uri.decode(uri)) or 'book.txt'
     name = name.replace('/', '_')
-    stream = resolver.openInputStream(parsed)
-    if stream is None:
-        raise RuntimeError(f"не открывается {name}")
     dst = os.path.join(dest_dir, name)
     try:
-        Files = autoclass('java.nio.file.Files')
-        Paths = autoclass('java.nio.file.Paths')
-        Options = autoclass('java.nio.file.StandardCopyOption')
-        Files.copy(stream, Paths.get(dst), [Options.REPLACE_EXISTING])
+        # основной путь: файловый дескриптор документа читается обычными средствами Python
+        pfd = resolver.openFileDescriptor(parsed, 'r')
+        if pfd is None:
+            raise RuntimeError("нет доступа к файлу")
+        fd = pfd.detachFd()
+        with os.fdopen(fd, 'rb') as src, open(dst, 'wb') as out:
+            shutil.copyfileobj(src, out, 1 << 20)
     except Exception:
-        # Android 7 (API 24-25): без java.nio.file — копируем блоками через массив байт Java
-        Array = autoclass('java.lang.reflect.Array')
-        buf = Array.newInstance(autoclass('java.lang.Byte').TYPE, 65536)
-        with open(dst, 'wb') as out:
-            while True:
-                n = stream.read(buf)
-                if n <= 0:
-                    break
-                out.write(bytes((b & 0xFF) for b in buf[:n]))
-    finally:
-        stream.close()
+        stream = resolver.openInputStream(parsed)
+        if stream is None:
+            raise RuntimeError(f"не открывается {name}")
+        try:
+            Array = autoclass('java.lang.reflect.Array')
+            buf = Array.newInstance(autoclass('java.lang.Byte').TYPE, 65536)
+            with open(dst, 'wb') as out:
+                while True:
+                    n = stream.read(buf)
+                    if n <= 0:
+                        break
+                    out.write(bytes((b & 0xFF) for b in buf[:n]))
+        finally:
+            stream.close()
+    if os.path.getsize(dst) == 0:
+        os.remove(dst)
+        raise RuntimeError(f"{name}: получен пустой файл (файл в облаке? скачайте его на телефон)")
     return dst
 
 

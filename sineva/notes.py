@@ -46,7 +46,17 @@ def append_to_book(path: str, text: str) -> None:
         return
     with open(path, 'rb') as f:
         raw = f.read()
-    enc = _detect_encoding(raw)
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):          # UTF-16 из «Блокнота»: дописываем в той же кодировке
+        enc = 'utf-16-le' if raw.startswith(b'\xff\xfe') else 'utf-16-be'
+        tail = '\n'.encode(enc)
+        data = text.encode(enc)
+        with open(path, 'ab') as f:
+            f.write((b'' if raw.endswith(tail) else tail) + data + tail)
+        return
+    if raw.startswith(b'\xef\xbb\xbf'):
+        enc = 'utf-8'
+    else:
+        enc = _detect_encoding(raw)
     try:
         data = text.encode(enc)
     except UnicodeEncodeError:
