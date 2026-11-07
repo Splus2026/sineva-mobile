@@ -233,8 +233,8 @@ try:
     check('конспект: цитата и источник', ck.startswith('.......' + txt[i:j]) and '(bibl.txt' in ck or '(Грани.txt' in ck, ck)
     p_txt = ctl.export_marks('txt'); p_docx = ctl.export_marks('docx')
     check('экспорт txt', p_txt and txt[i:j].strip()[:6] in open(p_txt, encoding='utf-8').read())
-    from docx import Document as _D
-    check('экспорт docx открывается', p_docx and any('Подчёркнутые' in x.text for x in _D(p_docx).paragraphs))
+    from sineva.textio import _read_docx_paragraphs_fast
+    check('экспорт docx открывается', p_docx and any('Подчёркнутые' in x for x in _read_docx_paragraphs_fast(p_docx)))
     ctl.unmark_selection(card['key'], i, j)
     check('снятие подчёркивания', len(ctl.marks.all_marks()) <= 1)
     ctl.unmark_selection(card['key'], 0, len(txt))
