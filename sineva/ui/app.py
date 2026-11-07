@@ -87,8 +87,8 @@ def keep_scroll(sv: ScrollView, rebuild):
     Clock.schedule_once(restore, 0.05)
 
 
-def vlist():
-    sv = ScrollView(bar_width=dp(4))
+def vlist(on_zoom=None):
+    sv = ZoomScroll(on_zoom, bar_width=dp(4)) if on_zoom else ScrollView(bar_width=dp(4))
     box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(6), padding=dp(6))
     box.bind(minimum_height=box.setter('height'))
     sv.add_widget(box)
@@ -97,18 +97,19 @@ def vlist():
 
 class SelectableText(Label):
     """Текст топика: жёлтый маркер на найденных словах, подчёркнутое и выделение.
-       Кнопка «Выделить» под текстом включает режим: нажимаем первое слово, затем последнее — фрагмент выделен,
-       вызывается on_select(card_key, start, end). Прокрутка списка работает как обычно."""
+       Касание слова (без сдвига пальца) выделяет это слово, касание второго слова — весь фрагмент между ними;
+       тогда вызывается on_select(card_key, start, end, виджет). Прокрутка и щипок работают как обычно."""
 
-    def __init__(self, card, on_select, on_hint=lambda t: None, **kw):
+    TAP_MAX_MOVE = 12            # dp: больше — это уже прокрутка, а не касание
+
+    def __init__(self, card, on_select, on_hint=lambda t: None, font_pt=16, on_activate=lambda w: None, **kw):
         kw.setdefault('color', (0.05, 0.05, 0.05, 1))
-        super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(16), **kw)
-        self.card, self.on_select = card, on_select
+        super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(font_pt), **kw)
+        self.card, self.on_select, self.on_hint, self.on_activate = card, on_select, on_hint, on_activate
         self.sel = None
         self.select_mode = False
         self._refs_info = {}
         self._anchor = None
-        self.on_hint = on_hint
         self.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
         self.bind(texture_size=self._on_texture)
         self.bind(pos=lambda *_: self._redraw(), size=lambda *_: self._redraw())
@@ -118,6 +119,12 @@ class SelectableText(Label):
     def _refresh(self):
         c = self.card
         self.text, self._refs_info = build_markup(c['text'], c['hl'], c['marks'], self.sel, self.select_mode)
+
+    def _apply(self):
+        """Один пересчёт текстуры после смены разметки."""
+        self._refresh()
+        self.texture_update()
+        self._redraw()
 
     def _on_texture(self, w, ts):
         self.height = ts[1] + dp(10)
@@ -153,46 +160,94 @@ class SelectableText(Label):
         ty = ts[1] - (pos[1] - (self.center_y - ts[1] / 2.0))
         return atom_at(self._refs_info, self.refs, tx, ty)
 
-    # --- выделение касаниями: «Выделить» → нажать первое слово → нажать последнее слово
-    def toggle_select_mode(self):
-        self.select_mode = not self.select_mode
-        self._anchor = None
-        self.sel = None
-        self._refresh()
-        self.texture_update()
-        self._redraw()
-        return self.select_mode
+    # --- касания
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            touch.ud['tap_start_' + str(id(self))] = touch.pos       # в системе координат этого виджета
+        return super().on_touch_down(touch)
 
-    def on_ref_press(self, ref):
-        if not self.select_mode:
+    def on_touch_up(self, touch):
+        start = touch.ud.get('tap_start_' + str(id(self)))
+        if (start is not None and self.collide_point(*touch.pos) and not touch.ud.get('pinch') and
+                (touch.pos[0] - start[0]) ** 2 + (touch.pos[1] - start[1]) ** 2 <= dp(self.TAP_MAX_MOVE) ** 2):
+            self._tap(touch.pos)
+        return super().on_touch_up(touch)
+
+    def _tap(self, pos):
+        if not self.select_mode:                  # первое касание карточки: слова становятся «нажимаемыми»
+            self.on_activate(self)                # у остальных карточек выделение сбрасывается
+            self.select_mode = True
+            self._apply()
+        word = self._hit(pos)
+        if word is None or not self.card['text'][word[0]:word[1]].strip():
             return
-        info = self._refs_info.get(int(ref))
-        if info is None or not self.card['text'][info['start']:info['end']].strip():
-            return
-        word = (info['start'], info['end'])
-        if self._anchor is None:                     # первое касание: начало
+        if self._anchor is None:
             self._anchor = word
             self.sel = word
-            self._refresh()
-            self.texture_update()
-            self._redraw()
-            self.on_hint('Теперь нажмите последнее слово фрагмента (или то же слово ещё раз)')
+            self._apply()
+            self.on_hint('Нажмите последнее слово фрагмента (то же слово — выделить одно)')
             return
         sel = (min(self._anchor[0], word[0]), max(self._anchor[1], word[1]))
         self._anchor = None
         self.sel = sel
-        self._refresh()
-        self.texture_update()
-        self._redraw()
+        self._apply()
         self.on_select(self.card['key'], sel[0], sel[1], self)
 
     def clear_selection(self):
         self.sel = None
         self._anchor = None
-        self.select_mode = False
-        self._refresh()
-        self.texture_update()
-        self._redraw()
+        if self.select_mode:
+            self.select_mode = False
+            self._apply()
+
+
+class ZoomScroll(ScrollView):
+    """Прокрутка + щипок двумя пальцами: разведение увеличивает шрифт, сведение уменьшает."""
+
+    def __init__(self, on_zoom, **kw):
+        super().__init__(**kw)
+        self.on_zoom = on_zoom
+        self._touches = []
+        self._pinch = False
+        self._d0 = 0
+
+    def _dist(self):
+        (a, b) = self._touches[:2]
+        return ((a.pos[0] - b.pos[0]) ** 2 + (a.pos[1] - b.pos[1]) ** 2) ** 0.5
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            self._touches.append(touch)
+            if len(self._touches) == 2:
+                self._pinch = True
+                self._d0 = max(self._dist(), 1)
+                self._ratio = 1.0
+                for t in self._touches:
+                    t.ud['pinch'] = True
+                self._prev_scroll = self.do_scroll_y
+                self.do_scroll_y = False
+                return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self._pinch:
+            if len(self._touches) >= 2:
+                self._ratio = self._dist() / self._d0
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if touch in self._touches:
+            self._touches.remove(touch)
+            if self._pinch:
+                if len(self._touches) < 2:
+                    ratio = self._ratio
+                    self._pinch = False
+                    self.do_scroll_y = getattr(self, '_prev_scroll', True)
+                    if abs(ratio - 1) > 0.08:
+                        self.on_zoom(ratio)
+                return True
+        return super().on_touch_up(touch)
 
 
 # ===================================================================
@@ -213,7 +268,8 @@ class SearchScreen(Screen):
         top.add_widget(self.go)
         self.status = mlabel('Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
-        self.sv, self.box = vlist()
+        self.sv, self.box = vlist(lambda r: self.app.zoom(r))
+        self._active = None
         root.add_widget(top)
         root.add_widget(self.status)
         root.add_widget(self.sv)
@@ -237,30 +293,25 @@ class SearchScreen(Screen):
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
         keep_scroll(self.sv, rebuild)
 
+    def _activate(self, widget):
+        if self._active is not None and self._active is not widget:
+            self._active.clear_selection()
+        self._active = widget
+
     def _card(self, c):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
-        body = SelectableText(c, self.app.on_selection, self.ctl.on_status)
+        body = SelectableText(c, self.app.on_selection, self.ctl.on_status,
+                              self.ctl.config.get_int('font_size', 16), self._activate)
         key = c['key']
-        row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
-        sel = Button(text='Выделить', background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
-
-        def toggle(*_):
-            on = body.toggle_select_mode()
-            sel.text = 'Готово' if on else 'Выделить'
-            if on:
-                self.ctl.on_status('Нажмите первое слово фрагмента')
-        sel.bind(on_release=toggle)
-        row.add_widget(sel)
-        if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
-            more = Button(text='Свернуть' if c['expanded'] else 'Полностью', background_normal='',
-                          background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
-            more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
-            row.add_widget(more)
         box.add_widget(head)
         box.add_widget(body)
-        box.add_widget(row)
+        if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
+            more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
+                          background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+            more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
+            box.add_widget(more)
         from kivy.graphics import RoundedRectangle
         with box.canvas.before:
             Color(*CARD)
@@ -460,43 +511,68 @@ class SinevaApp(App):
 
     # ---------- выделенный фрагмент: автоподчёркивание + меню ----------
     def on_selection(self, key, start, end, widget):
+        """Окно подтверждения. Окно показывается сразу; подчёркивание и запись в конспект — по кнопке."""
         text = widget.card['text']
         ctl = self.ctl
-        ctl.mark_selection(key, start, end)          # выделенное автоматически сохраняется в подчёркнутом
         chosen = text[start:end].strip()
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
-        preview = mlabel(escape_markup(chosen if len(chosen) < 300 else chosen[:300] + '…'), font_size=sp(14))
-        box.add_widget(preview)
-        pop = Popup(title='Выделено · сохранено в подчёркнутом', content=box, size_hint=(0.95, None), height=dp(380))
+        box.add_widget(mlabel(escape_markup(chosen if len(chosen) < 300 else chosen[:300] + '…'), font_size=sp(14)))
+        pop = Popup(title='Выделено', content=box, size_hint=(0.95, None), height=dp(400), auto_dismiss=False)
 
-        def close(*_):
+        def finish(mark=None, unmark=False):
             pop.dismiss()
+            def work(dt):
+                if mark:
+                    ctl.mark_selection(key, start, end, publish=False)
+                if unmark:
+                    ctl.unmark_selection(key, start, end, publish=False)
+                widget.card['marks'] = ctl.card_marks(key)      # обновляется только эта карточка, не весь список
+                widget.clear_selection()
+            Clock.schedule_once(work, 0)
 
         def to_conspect():
-            ctl.quote_to_conspect(key, chosen)
-            close()
+            ctl.quote_to_conspect(key, chosen)                  # цитата + источник в конспект
+            finish(mark=True)                                   # и тут же подчёркивание
+
+        def only_mark():
+            finish(mark=True)
 
         def copy():
             Clipboard.copy(chosen)
             ctl.on_status('Скопировано')
-            close()
-
-        def unmark():
-            ctl.unmark_selection(key, start, end)
-            close()
+            finish()
 
         def sentence():
             a, b = sentence_bounds(text, start, end)
-            close()
-            ctl.mark_selection(key, a, b)
+            pop.dismiss()
+            widget.sel = (a, b)
+            widget._apply()
             self.on_selection(key, a, b, widget)
 
-        for label, fn, color in (('В конспект', to_conspect, ACCENT), ('Копировать', copy, GRAY),
-                                 ('Всё предложение', sentence, GRAY),
-                                 ('Снять подчёркивание', unmark, (0.7, 0.15, 0.15, 1)),
-                                 ('Закрыть', close, GRAY)):
+        def cancel():
+            finish()
+
+        def unmark():
+            finish(unmark=True)
+
+        rows = [('В конспект и подчеркнуть', to_conspect, ACCENT), ('Только подчеркнуть', only_mark, GRAY),
+                ('Копировать', copy, GRAY), ('Всё предложение', sentence, GRAY)]
+        if ctl.selection_marked(key, start, end):
+            rows.append(('Снять подчёркивание', unmark, (0.7, 0.15, 0.15, 1)))
+        rows.append(('Отмена', cancel, GRAY))
+        for label, fn, color in rows:
             box.add_widget(btn(label, fn, color=color))
+        pop.height = dp(120 + 50 * len(rows))
         pop.open()
+
+    # ---------- размер шрифта (щипок) ----------
+    def zoom(self, ratio):
+        size = self.ctl.config.get_int('font_size', 16)
+        new = max(10, min(40, round(size * ratio)))
+        if new != size:
+            self.ctl.set_setting('font_size', new)
+            self.ctl._publish()
+            self.ctl.on_status(f'Шрифт: {new}')
 
     # ---------- «Дополнить» ----------
     def open_append(self):

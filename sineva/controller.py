@@ -244,19 +244,44 @@ class Controller:
                 return it
         return None
 
+    def _segments(self, key: str, item: dict):
+        brief = self.config.get_bool('brief_view', False) and key not in self.expanded
+        if brief:
+            exact, frags = self.search.highlight_spec(self.outcome, item)
+            return build_brief_view_mapped(item['content'], exact, frags)[2]
+        return [(0, 0, len(item['content']))]
+
     def _content_pieces(self, key: str, ds: int, de: int):
         item = self._find_item(key)
         if item is None:
             return None, []
-        brief = self.config.get_bool('brief_view', False) and key not in self.expanded
-        if brief:
-            exact, frags = self.search.highlight_spec(self.outcome, item)
-            _t, _h, segments = build_brief_view_mapped(item['content'], exact, frags)
-        else:
-            segments = [(0, 0, len(item['content']))]
-        return item, marks_mod.display_span_to_content(segments, ds, de)
+        return item, marks_mod.display_span_to_content(self._segments(key, item), ds, de)
 
-    def mark_selection(self, key: str, ds: int, de: int) -> bool:
+    def card_marks(self, key: str):
+        """Подчёркнутые участки одной карточки в координатах её текста — чтобы обновить только её, а не весь список."""
+        item = self._find_item(key)
+        if item is None:
+            return []
+        segments = self._segments(key, item)
+        spans = []
+        located = marks_mod.find_mark_spans(item['content'], self.marks.marks_for_file(marks_mod.file_key(item['book'])))
+        for _m, cs, ce in located:
+            spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
+        return sorted(spans)
+
+    def selection_marked(self, key: str, ds: int, de: int) -> bool:
+        """Выделенное уже целиком подчёркнуто?"""
+        item, pieces = self._content_pieces(key, ds, de)
+        if item is None or not pieces:
+            return False
+        located = marks_mod.find_mark_spans(item['content'], self.marks.marks_for_file(marks_mod.file_key(item['book'])))
+        for cs, ce in pieces:
+            info = marks_mod.analyze_span(item['content'], located, cs, ce)
+            if info is None or not info[3]:
+                return False
+        return True
+
+    def mark_selection(self, key: str, ds: int, de: int, publish: bool = True) -> bool:
         """Выделенное автоматически попадает в подчёркнутое (как «Ч» на ПК). True — что-то добавлено."""
         item, pieces = self._content_pieces(key, ds, de)
         if item is None:
@@ -278,11 +303,11 @@ class Controller:
                     self.marks.add_mark(file_name, *fields)
                     changed = True
             located_all = marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(file_name)))
-        if changed:
+        if changed and publish:
             self._publish()
         return changed
 
-    def unmark_selection(self, key: str, ds: int, de: int) -> bool:
+    def unmark_selection(self, key: str, ds: int, de: int, publish: bool = True) -> bool:
         item, pieces = self._content_pieces(key, ds, de)
         if item is None:
             return False
@@ -300,7 +325,7 @@ class Controller:
                 if fields:
                     self.marks.add_mark(file_name, *fields)
             changed = True
-        if changed:
+        if changed and publish:
             self._publish()
         return changed
 

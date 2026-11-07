@@ -74,12 +74,21 @@ cards = []
 c.on_cards = lambda cs, t, m: cards.extend(cs)
 c._publish()
 w = SelectableText(cards[0], app.on_selection, c.on_status)
-w.toggle_select_mode()
-ids = [i for i, r in w._refs_info.items() if cards[0]['text'][r['start']:r['end']].strip()]
-w.on_ref_press(str(ids[0]))
+w.texture_size = (400, 20); w.center_x = 200; w.center_y = 10
+def zones():
+    w.refs = {str(i): [(10 * i, 0, 10 * i + 9, 20)] for i in w._refs_info}
+orig_apply = w._apply
+def _apply():
+    orig_apply(); zones()
+w._apply = _apply
+w._tap((12, 5))                       # первое касание: слово
 first = w.sel
-w.on_ref_press(str(ids[min(2, len(ids) - 1)]))
+w._tap((32, 5))                       # второе касание: конец фрагмента -> окно подтверждения
 print('выделено касаниями:', first, '->', w.sel)
+app.search_s._activate(w)
+app.zoom(1.3); app.zoom(0.5)
+print('шрифт:', c.config.get_int('font_size', 0))
+print('отмечено:', c.selection_marked(cards[0]['key'], 0, 4), c.card_marks(cards[0]['key']))
 app.books_s.on_pre_enter(); app.on_resume(); app.settings_s.add_shortcut()
 print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children),
       'подчёркнутых:', len(c.marks.all_marks()))

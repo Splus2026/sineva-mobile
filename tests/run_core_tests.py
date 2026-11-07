@@ -235,6 +235,12 @@ try:
     check('экспорт txt', p_txt and txt[i:j].strip()[:6] in open(p_txt, encoding='utf-8').read())
     from sineva.textio import _read_docx_paragraphs_fast
     check('экспорт docx открывается', p_docx and any('Подчёркнутые' in x for x in _read_docx_paragraphs_fast(p_docx)))
+    check('выделение отмечено целиком', ctl.selection_marked(card['key'], i, j))
+    ctl.unmark_selection(card['key'], 0, len(txt), publish=False)
+    check('снятие без перерисовки списка', ctl.card_marks(card['key']) == [] and not ctl.selection_marked(card['key'], i, j))
+    ctl.mark_selection(card['key'], i, j, publish=False)
+    cm = ctl.card_marks(card['key'])
+    check('card_marks: отметка одной карточки', cm and cm[0][0] <= i and cm[0][1] >= j - 1, str(cm))
     ctl.unmark_selection(card['key'], i, j)
     check('снятие подчёркивания', len(ctl.marks.all_marks()) <= 1)
     ctl.unmark_selection(card['key'], 0, len(txt))
