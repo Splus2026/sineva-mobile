@@ -22,7 +22,14 @@ jobs:
       - name: Тесты ядра
         run: python tests/run_core_tests.py
       - name: Сборка
-        run: buildozer -v android debug
+        # GitHub иногда отвечает 503/504 при скачивании исходников — сборка повторяется (скачанное сохраняется)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            buildozer -v android debug && exit 0
+            echo "Попытка $i не удалась, повтор через 60 с"
+            sleep 60
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: sineva-apk
