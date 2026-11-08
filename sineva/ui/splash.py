@@ -57,7 +57,7 @@ class Splash(Widget):
         self.t += min(dt, 0.1)
         t = self.t
         self.wait.text = 'Загрузка' + '.' * (1 + int(t / 0.45) % 3)      # точки добавляются: . .. ...
-        self.wait.opacity = 0.0 if self.finished else 1.0
+        self.wait.opacity = 1.0 if t < 0.6 else 0.0              # слово начало собираться — надпись не нужна
         self.logo_color.a = min(1.0, max(0.0, (t - 0.3) / 1.6))      # круг проявляется вместе со словом
         size0 = self.cell / self.smoke.sub
         for i, (col, rect) in enumerate(self.dots):

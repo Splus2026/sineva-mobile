@@ -376,6 +376,32 @@ try:
     ctl2 = Controller(paths, run_async=False)
     check('выбранные книги помнятся', ctl2.selected == ctl.selected)
 
+    # ---------- отмена выделения и пароль ----------
+    uc = Controller(paths, run_async=False)
+    ug = {'cards': None}
+    uc.on_cards = lambda cards, total, more: ug.update(cards=cards)
+    uc.on_status = lambda t: None
+    uc.selected = {'bibl.txt'}
+    uc.submit_query('довер')
+    card = ug['cards'][0]
+    before_marks = len(uc.marks.all_marks())
+    csz = os.path.getsize(paths.conspect_path) if os.path.exists(paths.conspect_path) else 0
+    words = card['text'].split()
+    s0 = card['text'].index(words[2]); e0 = card['text'].index(words[4]) + len(words[4])
+    res = uc.toggle_mark(card['key'], s0, e0, card['text'][s0:e0])
+    check('выделение записано в отметки и конспект', res == 'marked' and len(uc.marks.all_marks()) > before_marks
+          and os.path.getsize(paths.conspect_path) > csz and len(uc.undo_stack) == 1)
+    key = uc.undo_last_mark()
+    check('отмена выделения: отметки и конспект как были', key == card['key'] and len(uc.marks.all_marks()) == before_marks
+          and (os.path.getsize(paths.conspect_path) if os.path.exists(paths.conspect_path) else 0) == csz and not uc.undo_stack)
+    check('пароль: по умолчанию нет', not uc.has_password() and uc.check_password('любой'))
+    uc.set_password('секрет1')
+    uc2 = Controller(paths, run_async=False)
+    check('пароль: хранится как хэш и проверяется', uc2.has_password() and uc2.check_password('секрет1')
+          and not uc2.check_password('секрет2') and 'секрет1' not in open(paths.config_path, encoding='utf-8').read())
+    uc2.set_password('')
+    check('пароль можно убрать', not Controller(paths, run_async=False).has_password())
+
     # ---------- вкладка «Чтение» ----------
     rc = Controller(paths, run_async=False)
     rg = {'cards': None, 'status': '', 'more': None}

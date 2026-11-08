@@ -54,6 +54,8 @@ class Controller:
         self._token = 0
         self._timer = None
         self.on_reset = lambda: None            # интерфейс очищает карточки обеих вкладок
+        self.undo_stack = []                    # последние выделения: можно отменить кнопкой «Отменить выделение»
+        self.on_undo = lambda n: None
         self.tab = 'search'                     # активная вкладка с карточками: 'search' | 'read'
         self._states = {}                       # сохранённые состояния неактивной вкладки
         self.dirty = set()                      # вкладки, карточки которых устарели (шрифт, вид) и перерисуются при входе
@@ -314,6 +316,8 @@ class Controller:
         self.pending_append = None
         self.more_label = ''
         self.dirty.clear()
+        self.undo_stack.clear()
+        self.on_undo(0)
         self.on_reset()
 
     def _release(self, items) -> None:
@@ -461,10 +465,57 @@ class Controller:
            уже подчёркнуто — подчёркивание снимается (конспект не трогаем). Возвращает 'marked' / 'unmarked' / None."""
         if self.selection_marked(key, ds, de):
             return 'unmarked' if self.unmark_selection(key, ds, de, publish=False) else None
+        item = self._find_item(key)
+        snapshot = list(self.marks.marks_for_file(marks_mod.file_key(item['book']))) if item else []
+        size = os.path.getsize(self.paths.conspect_path) if os.path.exists(self.paths.conspect_path) else 0
         if not self.mark_selection(key, ds, de, publish=False):
             return None
         self.quote_to_conspect(key, text)
+        if item:
+            self.undo_stack.append({'key': key, 'file_name': item['book'], 'snapshot': snapshot, 'conspect_size': size})
+            del self.undo_stack[:-30]
+            self.on_undo(len(self.undo_stack))
         return 'marked'
+
+    def undo_last_mark(self) -> Optional[str]:
+        """Отмена последнего выделения: подчёркивание снимается, запись в конспекте удаляется. Возвращает ключ карточки."""
+        if not self.undo_stack:
+            return None
+        e = self.undo_stack.pop()
+        try:
+            self.marks.replace_file_marks(e['file_name'], e['snapshot'])
+            path = self.paths.conspect_path
+            if os.path.exists(path) and os.path.getsize(path) > e['conspect_size']:
+                with open(path, 'r+b') as f:
+                    f.truncate(e['conspect_size'])
+            self.on_status("Выделение отменено, запись в конспекте удалена")
+        except Exception as ex:
+            self.on_status(f"Не удалось отменить: {ex}")
+        self.on_undo(len(self.undo_stack))
+        return e['key']
+
+    # ================= пароль =================
+    @staticmethod
+    def _hash(password: str, salt: str) -> str:
+        import hashlib
+        return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes.fromhex(salt), 100000).hex()
+
+    def has_password(self) -> bool:
+        return bool(self.config.get('pwd_hash', ''))
+
+    def set_password(self, password: str) -> None:
+        if not password:
+            self.set_setting('pwd_hash', '')
+            self.set_setting('pwd_salt', '')
+            return
+        salt = os.urandom(16).hex()
+        self.set_setting('pwd_salt', salt)
+        self.set_setting('pwd_hash', self._hash(password, salt))
+
+    def check_password(self, password: str) -> bool:
+        if not self.has_password():
+            return True
+        return self._hash(password, self.config.get('pwd_salt', '')) == self.config.get('pwd_hash', '')
 
     def quote_to_conspect(self, key: str, text: str) -> None:
         """«В конспект»: цитата + источник — в файл 0_Конспект.txt (формат как на ПК)."""

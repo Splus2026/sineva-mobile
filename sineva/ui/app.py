@@ -332,6 +332,8 @@ class SearchScreen(Screen):
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
+        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.status_slot.bind(minimum_height=self.status_slot.setter('height'))
         self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — блоки пойдут подряд.' if reading else
                              'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
@@ -341,9 +343,20 @@ class SearchScreen(Screen):
         self._base = ''
         if not reading:
             root.add_widget(top)
-        root.add_widget(self.status)
+        self.status_slot.add_widget(self.status)
+        root.add_widget(self.status_slot)
+        self.undo_btn = Button(text='Отменить выделение', size_hint_y=None, height=dp(37), background_normal='',
+                               background_color=ACCENT, color=(1, 1, 1, 1), font_size=sp(16))
+        self.undo_btn.bind(on_release=lambda *_: self.app.undo_mark())
+        top.bind(height=lambda w, h: setattr(self.undo_btn, 'height', h * 2 / 3))   # 2/3 высоты кнопки «Поиск»
+        self.undo_btn.height = top.height * 2 / 3
         root.add_widget(self.sv)
         self.add_widget(root)
+
+    def set_undo(self, visible):
+        """После выделения вместо строки состояния — кнопка «Отменить выделение»."""
+        self.status_slot.clear_widgets()
+        self.status_slot.add_widget(self.undo_btn if visible else self.status)
 
     def search(self):
         self.input.focus = False
@@ -395,6 +408,8 @@ class SearchScreen(Screen):
         if fresh or (not incremental and not self.reading_screen):
             self.sv.scroll_y = 1                                 # новая выдача — с начала
 
+        first = {'ms': None}
+
         def finish():
             if more:
                 self._more_btn = btn(ctl.more_label or 'Показать ещё', ctl.show_more)
@@ -402,7 +417,7 @@ class SearchScreen(Screen):
             elif not cards and not self.reading_screen and ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
             built = (time.time() - t0) * 1000
-            self._suffix = f" · карточки: {built:.0f} мс"
+            self._suffix = f" · первая карточка: {first['ms'] or built:.0f} мс, все: {built:.0f} мс"
             self.status.text = escape_markup(self._base + self._suffix)
 
         def step(dt):
@@ -412,6 +427,8 @@ class SearchScreen(Screen):
                 w = self._card(todo.pop(0))
                 self._cards.append(w)
                 self.box.add_widget(w)
+                if first['ms'] is None:
+                    first['ms'] = (time.time() - t0) * 1000
             if todo:
                 Clock.schedule_once(step, 0)
             else:
@@ -780,7 +797,8 @@ class SettingsScreen(Screen):
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
             lambda v: (self.ctl.set_setting('index_auto', v), self.ctl.rescan() if v else None)))
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(6) * 4
+        self.set_box.add_widget(btn('Пароль', self.app.open_password, color=GRAY))
+        self.set_box.height = dp(26) * 2 + dp(44) * 4 + dp(6) * 5
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
@@ -809,6 +827,8 @@ class SinevaApp(App):
         Window.add_widget(self.ready_root)
         self.root = self.ready_root
         Window.clearcolor = BG
+        if self.ctl.has_password():
+            self.ask_password()
 
     def _init_app(self, dt):
         """Запуск по шагам, по одному на кадр: заставка не замирает, пока строится интерфейс."""
@@ -874,6 +894,7 @@ class SinevaApp(App):
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
         c.on_reset = lambda: (self.search_s.clear(), self.read_s.clear())
+        c.on_undo = lambda n: (self.search_s.set_undo(n > 0), self.read_s.set_undo(n > 0))
         c.on_ask_continue = self.ask_continue
 
         root = BoxLayout(orientation='vertical')
@@ -895,6 +916,15 @@ class SinevaApp(App):
         for n, b in self.nav_buttons.items():
             b.background_color = ACCENT if n == name else NAV
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
+
+    def undo_mark(self):
+        key = self.ctl.undo_last_mark()
+        if key:
+            for scr in (self.search_s, self.read_s):
+                for w in scr._widgets.get(key, []):
+                    off = w.card.get('offset', 0)
+                    w.card['marks'] = clip_spans(self.ctl.card_marks(key), off, off + len(w.card['text']))
+                    w.clear_selection()
 
     def go_tab(self, name):
         self.sm.current = name                              # экран открывается сразу,
@@ -933,6 +963,67 @@ class SinevaApp(App):
             text_size=(Window.width - dp(60), None)))
         pop = top_popup('О программе', box, dp(470))
         box.add_widget(btn('Закрыть', pop.dismiss, color=GRAY))
+        pop.open()
+
+    def open_password(self):
+        """Создание, смена или удаление пароля (запрашивается при запуске после заставки)."""
+        ctl = self.ctl
+        has = ctl.has_password()
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+
+        def field(hint):
+            f = no_bubble(TextInput(hint_text=hint, multiline=False, password=True, size_hint_y=None,
+                                    height=dp(44), font_size=sp(16)))
+            box.add_widget(f)
+            return f
+        old = field('Текущий пароль') if has else None
+        new = field('Новый пароль' + (' (пусто — убрать пароль)' if has else ''))
+        again = field('Повторите новый пароль')
+        msg = Label(text='', color=(1, 0.6, 0.6, 1), font_size=sp(14), size_hint_y=None, height=dp(24))
+        box.add_widget(msg)
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        pop = top_popup('Пароль', box, dp(60) + dp(44) * (4 if has else 3) + dp(80))
+
+        def save():
+            if has and not ctl.check_password(old.text):
+                msg.text = 'Неверный текущий пароль'
+                return
+            if new.text != again.text:
+                msg.text = 'Пароли не совпадают'
+                return
+            if not has and not new.text:
+                msg.text = 'Введите пароль'
+                return
+            ctl.set_password(new.text)
+            ctl.on_status('Пароль установлен' if new.text else 'Пароль убран')
+            pop.dismiss()
+        row.add_widget(btn('Сохранить', save))
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        box.add_widget(row)
+        pop.open()
+
+    def ask_password(self):
+        """Вход по паролю после заставки: окно закрывает всё приложение, пока не введён верный пароль."""
+        self._locked = True
+        box = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(24))
+        box.add_widget(Label(text='Синева Mobile', font_size=sp(26), size_hint_y=None, height=dp(60)))
+        field = no_bubble(TextInput(hint_text='Пароль', multiline=False, password=True, size_hint_y=None,
+                                    height=dp(48), font_size=sp(20)))
+        box.add_widget(field)
+        msg = Label(text='', color=(1, 0.6, 0.6, 1), size_hint_y=None, height=dp(28))
+        box.add_widget(msg)
+        pop = Popup(title='', content=box, size_hint=(1, 1), auto_dismiss=False, separator_height=0)
+
+        def enter(*_):
+            if self.ctl.check_password(field.text):
+                self._locked = False
+                pop.dismiss()
+            else:
+                msg.text = 'Неверный пароль'
+                field.text = ''
+        box.add_widget(btn('Войти', enter))
+        box.add_widget(BoxLayout())
+        field.bind(on_text_validate=enter)
         pop.open()
 
     def confirm_exit(self):
@@ -1006,7 +1097,7 @@ class SinevaApp(App):
         row.add_widget(btn('Добавить', add))
         row.add_widget(btn('CTR+V', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
-        for w in (spin, last, text, row):
+        for w in (spin, last, row, text):                   # кнопки между окнами — клавиатура их не закроет
             box.add_widget(w)
         pop.open()
         show_last()
@@ -1093,13 +1184,15 @@ class SinevaApp(App):
         row.add_widget(btn('Записать', add))
         row.add_widget(btn('CTR+V', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
-        for w in (last, text, row):
+        for w in (last, row, text):
             box.add_widget(w)
         pop.open()
         show_tail()
 
     def _on_key(self, window, key, *a):
         if key == 27:                                       # «Назад»
+            if getattr(self, '_locked', False):
+                return True
             if getattr(self, 'ready_root', None) is None:
                 return True
             if getattr(self, '_exit_pop', None) is not None:
