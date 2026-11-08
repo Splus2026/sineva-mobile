@@ -1,8 +1,14 @@
-"""Индекс одной книги — файл SQLite.
+"""Индекс одной книги — файл SQLite, не зависящий от FTS5.
 
-Таблицы как у FTS5-движка Синевы+ (docs — FTS5 с триграммами, doc_metadata — файл и позиция), плюс info —
-сведения для проверки актуальности индекса. Если в SQLite телефона нет FTS5/trigram, docs становится
-обычной таблицей, а поиск идёт перебором в Python (медленнее, но работает на книгах в единицы МБ).
+На телефонах в SQLite часто нет FTS5/trigram, поэтому поиск устроен иначе — «словарь + вхождения»:
+  docs(rowid, content)            — текст топика (читается только для показанных карточек)
+  doc_metadata(rowid, position)   — позиция топика в файле
+  vocab(id, word)                 — все различные слова книги в нижнем регистре
+  postings(word_id, topic_id, cnt)— в каком топике сколько раз встретилось слово
+  info(key, value)                — сведения для проверки актуальности (в том числе format)
+Запрос: фрагменты слов ищутся по словарю (в нём десятки тысяч слов, а не весь текст), для найденных слов
+берутся вхождения — уровни совпадения и счётчики считаются без чтения текста, так что ранжирование
+всех топиков занимает десятки миллисекунд даже на слабом телефоне.
 """
 import os
 import re
@@ -10,22 +16,13 @@ import sqlite3
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .queryparser import compute_matches, get_fragments_with_levels
+from .queryparser import get_fragments_with_levels
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
 
-FTS_TABLE = "docs"
-
-
-def fts5_trigram_available() -> bool:
-    """Есть ли в этой сборке SQLite FTS5 с токенайзером trigram (нужен SQLite 3.34+)."""
-    try:
-        c = sqlite3.connect(':memory:')
-        c.execute("CREATE VIRTUAL TABLE t USING fts5(content, tokenize='trigram')")
-        c.close()
-        return True
-    except sqlite3.Error:
-        return False
+INDEX_FORMAT = '2'
+DOCS_TABLE = "docs"
+_TOKEN_RE = re.compile(r'[а-яА-ЯёЁa-zA-Z0-9]+')
 
 
 def _connect(path: str) -> sqlite3.Connection:
@@ -35,17 +32,13 @@ def _connect(path: str) -> sqlite3.Connection:
 
 
 def build_index(source_path: str, index_path: str, separator: str,
-                progress: Optional[Callable[[int, int], None]] = None,
-                use_fts: Optional[bool] = None) -> int:
+                progress: Optional[Callable[[int, int], None]] = None) -> int:
     """Читает книгу, режет на топики и записывает индекс. Пишет во временный файл и заменяет им старый —
        прерванная индексация не оставляет испорченного индекса. Возвращает число топиков."""
     text = read_text_file(source_path)
     if not text.strip():
         raise ValueError("файл пуст или в нём нет текста")
-    lines = text.splitlines(keepends=False)
-    sections = split_into_sections_by_separator(lines, separator)
-    if use_fts is None:
-        use_fts = fts5_trigram_available()
+    sections = split_into_sections_by_separator(text.splitlines(keepends=False), separator)
 
     tmp = index_path + '.building'
     if os.path.exists(tmp):
@@ -55,26 +48,39 @@ def build_index(source_path: str, index_path: str, separator: str,
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode = OFF")
         cur.execute("PRAGMA synchronous = OFF")
-        if use_fts:
-            cur.execute(f"CREATE VIRTUAL TABLE {FTS_TABLE} USING fts5(content, tokenize='trigram')")
-        else:
-            cur.execute(f"CREATE TABLE {FTS_TABLE}(content TEXT)")
+        cur.execute(f"CREATE TABLE {DOCS_TABLE}(rowid INTEGER PRIMARY KEY, content TEXT)")
         cur.execute("CREATE TABLE doc_metadata(rowid INTEGER PRIMARY KEY, file_name TEXT, position TEXT)")
+        cur.execute("CREATE TABLE vocab(id INTEGER PRIMARY KEY, word TEXT)")
+        cur.execute("CREATE TABLE postings(word_id INTEGER, topic_id INTEGER, cnt INTEGER, "
+                    "PRIMARY KEY(word_id, topic_id)) WITHOUT ROWID")
         cur.execute("CREATE TABLE info(key TEXT PRIMARY KEY, value TEXT)")
         file_name = os.path.basename(source_path)
         total = len(sections)
+        word_ids: Dict[str, int] = {}
         cur.execute("BEGIN")
         for i, sec in enumerate(sections, 1):
             content = '\n'.join(sec['lines'])
-            cur.execute(f"INSERT INTO {FTS_TABLE}(rowid, content) VALUES(?, ?)", (i, content))
+            cur.execute(f"INSERT INTO {DOCS_TABLE}(rowid, content) VALUES(?, ?)", (i, content))
             cur.execute("INSERT INTO doc_metadata(rowid, file_name, position) VALUES(?, ?, ?)",
                         (i, file_name, str(sec.get('start_line', 0))))
+            counts: Dict[str, int] = {}
+            for token in _TOKEN_RE.findall(content):
+                t = token.lower()
+                counts[t] = counts.get(t, 0) + 1
+            rows = []
+            for word, cnt in counts.items():
+                wid = word_ids.get(word)
+                if wid is None:
+                    wid = word_ids[word] = len(word_ids) + 1
+                rows.append((wid, i, cnt))
+            cur.executemany("INSERT INTO postings(word_id, topic_id, cnt) VALUES(?, ?, ?)", rows)
             if progress and i % 200 == 0:
                 progress(i, total)
+        cur.executemany("INSERT INTO vocab(id, word) VALUES(?, ?)", [(v, k) for k, v in word_ids.items()])
         st = os.stat(source_path)
         info = {'source_name': file_name, 'source_size': str(st.st_size), 'source_mtime': str(int(st.st_mtime)),
-                'separator': separator, 'topics': str(total), 'fts': '1' if use_fts else '0',
-                'built_at': str(int(time.time()))}
+                'separator': separator, 'topics': str(total), 'format': INDEX_FORMAT,
+                'words': str(len(word_ids)), 'built_at': str(int(time.time()))}
         cur.executemany("INSERT INTO info(key, value) VALUES(?, ?)", list(info.items()))
         conn.commit()
         if progress:
@@ -90,7 +96,7 @@ def build_index(source_path: str, index_path: str, separator: str,
 
 
 def read_info(index_path: str) -> Dict[str, str]:
-    """Сведения об индексе (пусто, если файла нет или он не нашего формата, например создан на ПК)."""
+    """Сведения об индексе (пусто, если файла нет или он не нашего формата)."""
     if not os.path.exists(index_path):
         return {}
     try:
@@ -103,21 +109,14 @@ def read_info(index_path: str) -> Dict[str, str]:
         return {}
 
 
-def _candidate_terms(query_words_info) -> Tuple[List[str], bool]:
+def _candidate_terms(query_words_info) -> List[str]:
     """Самый короткий допустимый фрагмент каждого слова запроса: любой более длинный фрагмент (префикс слова)
-       содержит его как подстроку, поэтому достаточно искать только его. Второе значение — можно ли обойтись
-       FTS5 (триграммы работают от 3 знаков; для более коротких фрагментов нужен перебор)."""
-    terms, fts_ok = [], True
+       содержит его как подстроку, поэтому по словарю достаточно искать только его."""
+    terms = []
     for word, min_len, _must_start in query_words_info:
         frags = get_fragments_with_levels(word, min_len)
-        shortest = (frags[-1][0] if frags else word).lower()
-        if len(shortest) < 3:
-            fts_ok = False
-        terms.append(shortest)
-    return terms, fts_ok
-
-
-_TOKEN_RE = re.compile(r'[а-яА-ЯёЁa-zA-Z0-9]+')
+        terms.append((frags[-1][0] if frags else word).lower())
+    return terms
 
 
 class FastMatcher:
@@ -180,11 +179,7 @@ class BookIndex:
         except sqlite3.Error:
             pass
         self.info = info
-        self.is_fts = self._detect_fts()
-
-    def _detect_fts(self) -> bool:
-        row = self.conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (FTS_TABLE,)).fetchone()
-        return bool(row and row[0] and 'fts5' in row[0].lower())
+        self.is_current = info.get('format') == INDEX_FORMAT
 
     def close(self):
         try:
@@ -194,61 +189,60 @@ class BookIndex:
 
     def topic_count(self) -> int:
         try:
-            return self.conn.execute(f"SELECT count(*) FROM {FTS_TABLE}").fetchone()[0]
-        except sqlite3.Error:
+            return int(self.info.get('topics') or self.conn.execute(f"SELECT count(*) FROM {DOCS_TABLE}").fetchone()[0])
+        except (sqlite3.Error, ValueError):
             return 0
 
-    def search(self, query_words_info, candidate_limit: int = 3000, cancelled=None) -> List[dict]:
-        """Топики, где есть слова запроса или их начальные фрагменты (как в десктопной версии).
-           Возвращает [{'rowid', 'content', 'meta', 'position'}] — без сортировки между книгами."""
+    def search(self, query_words_info, candidate_limit=None, cancelled=None) -> List[dict]:
+        """Все топики, где есть слова запроса или их начальные фрагменты (как в десктопной версии).
+           Возвращает [{'rowid', 'meta', 'content': None, 'position': None}] — текст и позиция
+           подгружаются позже, только для показанных (fetch). Без сортировки между книгами."""
         if not query_words_info:
             return []
-        terms, fts_ok = _candidate_terms(query_words_info)
-        rows = []
-        if self.is_fts and fts_ok:
-            match = " OR ".join('"%s"' % t.replace('"', '') for t in terms)
-            try:
-                rows = self.conn.execute(
-                    f"SELECT rowid, content FROM {FTS_TABLE} WHERE {FTS_TABLE} MATCH ? LIMIT ?",
-                    (match, candidate_limit)).fetchall()
-            except sqlite3.Error:
-                rows = self._scan(terms, candidate_limit)
-        else:
-            rows = self._scan(terms, candidate_limit)
-
-        out = []
-        positions = self._positions([r[0] for r in rows])
+        if not self.is_current:
+            raise ValueError("индекс старого формата — нажмите «Индексировать»")
         matcher = FastMatcher(query_words_info)
-        for n, (rowid, content) in enumerate(rows):
-            if cancelled and n % 100 == 0 and cancelled():
-                break                              # запрос уже изменился — не тратим батарею
-            meta = matcher.match(content)
-            if meta is None:
-                continue
-            out.append({'rowid': rowid, 'content': content, 'meta': meta, 'position': positions.get(rowid, '0')})
+        terms = _candidate_terms(query_words_info)
+        cond = ' OR '.join('instr(word, ?) > 0' for _ in terms)
+        levels: Dict[int, Tuple[str, int]] = {}
+        for wid, word in self.conn.execute(f"SELECT id, word FROM vocab WHERE {cond}", terms):
+            lvl = matcher._level(word)
+            if lvl:
+                levels[wid] = (word, lvl)
+        if not levels:
+            return []
+        topics: Dict[int, dict] = {}
+        ids = list(levels)
+        for i in range(0, len(ids), 500):            # у SQLite ограничено число параметров в запросе
+            if cancelled and cancelled():
+                return []
+            chunk = ids[i:i + 500]
+            q = ','.join('?' * len(chunk))
+            for wid, topic, cnt in self.conn.execute(
+                    f"SELECT word_id, topic_id, cnt FROM postings WHERE word_id IN ({q})", chunk):
+                word, lvl = levels[wid]
+                t = topics.get(topic)
+                if t is None:
+                    t = topics[topic] = {'counts': {k: 0 for k in range(5, 11)}, 'words': set()}
+                t['counts'][lvl] += cnt
+                t['words'].add(word)
+        out = []
+        for topic, t in topics.items():
+            counts = t['counts']
+            max_level = max(l for l, c in counts.items() if c > 0)
+            out.append({'rowid': topic, 'content': None, 'position': None,
+                        'meta': {'matched_words': list(t['words']), 'counts': counts,
+                                 'max_level': max_level, 'count_at_max': counts[max_level]}})
         return out
 
-    def _scan(self, terms: List[str], limit: int) -> List[Tuple[int, str]]:
-        """Перебор без FTS5: фрагмент ищется в нижнем регистре (в SQLite LIKE не понимает кириллицу)."""
-        res = []
-        for rowid, content in self.conn.execute(f"SELECT rowid, content FROM {FTS_TABLE}"):
-            low = content.lower()
-            if any(t in low for t in terms):
-                res.append((rowid, content))
-                if len(res) >= limit:
-                    break
-        return res
-
-    def _positions(self, rowids: List[int]) -> Dict[int, str]:
-        if not rowids:
-            return {}
-        out = {}
-        try:
-            for i in range(0, len(rowids), 500):      # у SQLite ограничено число параметров в запросе
-                chunk = rowids[i:i + 500]
-                q = ','.join('?' * len(chunk))
-                for r in self.conn.execute(f"SELECT rowid, position FROM doc_metadata WHERE rowid IN ({q})", chunk):
-                    out[r[0]] = r[1]
-        except sqlite3.Error:
-            pass
+    def fetch(self, rowids: List[int]) -> Dict[int, Tuple[str, str]]:
+        """Текст и позиция выбранных топиков: {rowid: (content, position)}."""
+        out: Dict[int, Tuple[str, str]] = {}
+        for i in range(0, len(rowids), 500):
+            chunk = rowids[i:i + 500]
+            q = ','.join('?' * len(chunk))
+            for r in self.conn.execute(
+                    f"SELECT d.rowid, d.content, m.position FROM {DOCS_TABLE} d "
+                    f"LEFT JOIN doc_metadata m ON m.rowid = d.rowid WHERE d.rowid IN ({q})", chunk):
+                out[r[0]] = (r[1], r[2] if r[2] is not None else '0')
         return out

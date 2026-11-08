@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from .config import AppConfig
-from .index import build_index, read_info
+from .index import INDEX_FORMAT, build_index, read_info
 from .paths import AppPaths
 
 BOOK_EXTENSIONS = ('.txt', '.docx')
@@ -85,7 +85,7 @@ class Library:
         try:
             st = os.stat(book.path)
             same = (info.get('source_size') == str(st.st_size) and info.get('source_mtime') == str(int(st.st_mtime))
-                    and info.get('separator') == book.separator)
+                    and info.get('separator') == book.separator and info.get('format') == INDEX_FORMAT)
         except OSError:
             same = False
         book.state = READY if same else STALE

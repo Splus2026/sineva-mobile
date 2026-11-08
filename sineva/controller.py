@@ -4,6 +4,7 @@
 проверяется тестами на ПК. Колбэки вызываются через ui_post — в Kivy это Clock.schedule_once, в тестах — вызов на месте.
 """
 import os
+import shutil
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -222,6 +223,7 @@ class Controller:
         brief = self.config.get_bool('brief_view', False)
         limit = min(len(visible), self.cap)                 # «лучшие N»: остальные — по кнопке
         count = min(self.shown, limit)
+        self.search.fill(visible[:count])                  # текст подгружается только для показанных
         cards = []
         for i, item in enumerate(visible[:count]):
             key = f"{item['book']}:{item['rowid']}"
@@ -238,7 +240,7 @@ class Controller:
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
 
-    MAX_CHARS = 2500          # длиннее — показываем окном: огромная текстура на телефоне даёт чёрные прямоугольники и тормоза
+    MAX_CHARS = 1800          # длиннее — показываем окном: огромная текстура на телефоне даёт чёрные прямоугольники и тормоза
 
     def _view(self, key: str, item: dict, brief: bool):
         """(текст на экране, интервалы подсветки, карта кусков, постраничность) для топика."""
@@ -422,7 +424,7 @@ class Controller:
         if not marks:
             self.on_status("Подчёркнутых фрагментов пока нет")
             return None
-        path = os.path.join(self.paths.exports_dir, f"underlines_{time.strftime('%Y-%m-%d_%H%M')}.{fmt}")
+        path = self._export_name('Подчёркнутое', fmt)
         try:
             (marks_mod.export_marks_docx if fmt == 'docx' else marks_mod.export_marks_txt)(marks, path)
         except Exception as e:
@@ -430,6 +432,42 @@ class Controller:
             return None
         self.on_status(f"Сохранено: {path}")
         return path
+
+    def _export_name(self, label: str, ext: str) -> str:
+        """Имя вида «Конспект_2026-11-08_12-30-15.txt»: пункт меню + дата-время экспорта."""
+        return os.path.join(self.paths.exports_dir, f"{label}_{time.strftime('%Y-%m-%d_%H-%M-%S')}.{ext}")
+
+    def export_conspect(self) -> Optional[str]:
+        return self._export_copy(self.conspect_file(), 'Конспект')
+
+    def export_diary(self) -> Optional[str]:
+        return self._export_copy(self.diary_file(), 'Дневник')
+
+    def _export_copy(self, src: Optional[str], label: str) -> Optional[str]:
+        if not src:
+            return None
+        dst = self._export_name(label, 'txt')
+        try:
+            shutil.copyfile(src, dst)
+        except Exception as e:
+            self.on_status(f"Не удалось сохранить: {e}")
+            return None
+        self.on_status(f"Сохранено: {os.path.basename(dst)}")
+        return dst
+
+    def list_exports(self) -> list:
+        """Экспортированные файлы: [(имя, путь, время, размер)], последние сверху."""
+        out = []
+        try:
+            for n in os.listdir(self.paths.exports_dir):
+                p = os.path.join(self.paths.exports_dir, n)
+                if os.path.isfile(p):
+                    st = os.stat(p)
+                    out.append((n, p, st.st_mtime, st.st_size))
+        except OSError:
+            pass
+        out.sort(key=lambda x: x[2], reverse=True)
+        return out
 
     def conspect_file(self) -> Optional[str]:
         if os.path.exists(self.paths.conspect_path) and os.path.getsize(self.paths.conspect_path) > 0:

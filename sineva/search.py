@@ -39,11 +39,30 @@ class SearchService:
         self.vectors = vectors or VectorRegistry()
         self.excluded: Set[str] = set()
 
+    def fill(self, items) -> None:
+        """Подгружает текст и позицию топиков (поиск возвращает только оценки): нужно лишь для показанных."""
+        by_book = {}
+        for it in items:
+            if it.get('content') is None:
+                by_book.setdefault(it['book'], []).append(it)
+        for name, its in by_book.items():
+            book = getattr(self, '_books', {}).get(name)
+            if book is None:
+                continue
+            idx = BookIndex(book.index_path)
+            try:
+                data = idx.fetch([it['rowid'] for it in its])
+            finally:
+                idx.close()
+            for it in its:
+                it['content'], it['position'] = data.get(it['rowid'], ('', '0'))
+
     # ---------- поиск ----------
     def search(self, query: str, books: List[Book], mode: str = 'text', cancelled=None,
                count_words: bool = True) -> SearchOutcome:
         """cancelled — функция без аргументов: True, если пользователь уже изменил запрос (поиск бросается)."""
         out = SearchOutcome(query=query, mode=mode)
+        self._books = {b.file_name: b for b in books}
         t0 = time.time()
         if mode == 'vector':
             return self._search_vector(query, books, out)
@@ -62,7 +81,7 @@ class SearchService:
             idx = None
             try:
                 idx = BookIndex(book.index_path)
-                out.modes.add('FTS' if idx.is_fts else 'перебор')
+                out.modes.add('словарь')
                 t_idx = time.time()
                 found = idx.search(out.words_info, limit, cancelled)
                 out.index_ms += (time.time() - t_idx) * 1000

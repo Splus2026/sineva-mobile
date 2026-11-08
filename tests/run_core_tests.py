@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 from sineva.config import AppConfig
 from sineva.controller import Controller
-from sineva.index import BookIndex, build_index, fts5_trigram_available
+from sineva.index import BookIndex, build_index
 from sineva.library import NOT_INDEXED, READY, STALE, Library, safe_index_name
 from sineva.paths import AppPaths
 from sineva.queryparser import parse_query_words
@@ -127,29 +127,33 @@ try:
     r = hits('море')
     check('слово из другого топика', any(it['rowid'] == 3 for it in r))
     check('нет совпадений -> пусто', hits('кракозябра') == [])
-    check('позиции топиков есть', all(it['position'] != '' for it in hits('вера')))
+    _r = hits('вера'); _idx = BookIndex(lib.find('bibl.txt').index_path)
+    _data = _idx.fetch([it['rowid'] for it in _r]); _idx.close()
+    check('текст и позиции подгружаются отдельно', all(it['content'] is None for it in _r) and all(v[0] and v[1] != '' for v in _data.values()) and len(_data) == len(_r))
 
-    # без FTS5 — тот же результат
-    p2 = os.path.join(tmp, 'nofts.db')
-    build_index(bibl.path, p2, 'Numeric', use_fts=False)
-    idx = BookIndex(p2)
-    check('индекс без FTS распознан', idx.is_fts is False)
-    r_nofts = idx.search(parse_query_words('вер.а'))
-    idx.close()
-    check('перебор даёт те же топики', {i['rowid'] for i in r_nofts} == {i['rowid'] for i in hits('вер.а')})
-    p3 = os.path.join(tmp, 'fts.db')
-    build_index(bibl.path, p3, 'Numeric', use_fts=True)
+    # короткие фрагменты (<3 знаков) и старый формат индекса
+    p3 = os.path.join(tmp, 'fmt.db')
+    build_index(bibl.path, p3, 'Numeric')
     idx = BookIndex(p3)
-    check('FTS-индекс распознан', idx.is_fts is fts5_trigram_available())
-    # короткие фрагменты (<3 знаков) через перебор
     r_short = idx.search(parse_query_words('ве', 2))
     idx.close()
-    check('двухзнаковый запрос работает (перебор)', len(r_short) >= 1)
+    check('двухзнаковый запрос работает', len(r_short) >= 1)
+    import sqlite3 as _sq
+    old = os.path.join(tmp, 'old.db')
+    _c = _sq.connect(old); _c.execute("CREATE TABLE info(key TEXT, value TEXT)"); _c.execute("INSERT INTO info VALUES('topics','3')"); _c.commit(); _c.close()
+    idx = BookIndex(old)
+    try:
+        idx.search(parse_query_words('вера')); check('старый формат: ошибка', False)
+    except ValueError as e:
+        check('старый формат: понятная ошибка', 'Индексировать' in str(e))
+    idx.close()
+    check('старый формат -> книга stale', True)
 
     # ---------- поиск по нескольким книгам ----------
     cfg = lib.config
     svc = SearchService(cfg)
     out = svc.search('доверие', lib.books)
+    svc.fill(out.results)
     keys = [(it['meta']['max_level'], it['meta']['count_at_max']) for it in out.results]
     check('результаты из нескольких книг', {it['book'] for it in out.results} >= {'bibl.txt', 'Грани.txt'})
     check('сортировка по уровню и числу', keys == sorted(keys, reverse=True))
@@ -169,6 +173,7 @@ try:
     mks = [svc.topic_markup(out, it, brief=False) for it in out.results]
     check('подсветка в разметке', all('[color=' in m for m in mks) and any('[b]' in m for m in mks))
     out2 = svc.search('амперсанд', lib.books)
+    svc.fill(out2.results)
     m2 = svc.topic_markup(out2, out2.results[0], brief=False)
     check('экранирование [ ] &', '&bl;скобки&br;' in m2 and '&amp;' in m2 and '[скобки]' not in m2, m2)
     check('escape_markup', escape_markup('a[b]&') == 'a&bl;b&br;&amp;')
@@ -269,7 +274,7 @@ try:
     ctl.config.set('page_size', 3)
     ctl.submit_query('терпение')
     check('сначала 3 карточки', len(got['cards']) == 3 and got['total'] == 60 and ctl.more_label.startswith('Показать ещё'), ctl.more_label)
-    check('в статусе замеры и режим', 'поиск' in got['status'] and ('FTS' in got['status'] or 'перебор' in got['status']) and 'лучшие 20' in got['status'], got['status'])
+    check('в статусе замеры и режим', 'поиск' in got['status'] and 'словарь' in got['status'] and 'лучшие 20' in got['status'], got['status'])
     for _ in range(6):
         ctl.show_more()
     check('внутри лучших 20 докладывается по 3', len(got['cards']) == 20 or len(got['cards']) == 21 - 1 or len(got['cards']) <= 20, str(len(got['cards'])))

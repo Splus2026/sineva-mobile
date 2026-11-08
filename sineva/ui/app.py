@@ -24,16 +24,36 @@ from .. import __version__
 from ..controller import Controller
 from ..search import escape_markup
 from .picker import add_home_shortcut, pick_files, share_file
+from . import textmodel
 from .textmodel import atom_at, build_markup
 
-BG = (0.97, 0.97, 0.98, 1)
-CARD = (1, 1, 1, 1)
-TXT = (0.1, 0.1, 0.12, 1)
-ACCENT = (0.04, 0.34, 0.82, 1)
-GRAY = (0.45, 0.45, 0.5, 1)
+THEMES = {
+    'day': dict(BG=(0.91, 0.94, 0.98, 1), CARD=(0.78, 0.85, 0.93, 1), TXT=(0.08, 0.13, 0.24, 1),
+                BODY=(0.05, 0.08, 0.15, 1), ACCENT=(0.25, 0.42, 0.66, 1), GRAY=(0.45, 0.5, 0.6, 1),
+                NAV=(0.84, 0.89, 0.96, 1), NAV_TXT=(0.25, 0.42, 0.66, 1), BTN2=(0.9, 0.93, 0.98, 1),
+                BTN2_TXT=(0.25, 0.42, 0.66, 1), MARK_RGBA=(0.04, 0.16, 0.55, 1), MARK_COLOR='0a2a8c', HL_TEXT=''),
+    'night': dict(BG=(0.12, 0.13, 0.19, 1), CARD=(0.24, 0.29, 0.48, 1), TXT=(0.93, 0.94, 0.98, 1),
+                  BODY=(0.93, 0.94, 0.98, 1), ACCENT=(0.33, 0.42, 0.7, 1), GRAY=(0.4, 0.43, 0.56, 1),
+                  NAV=(0.09, 0.1, 0.15, 1), NAV_TXT=(0.75, 0.8, 0.96, 1), BTN2=(0.19, 0.22, 0.36, 1),
+                  BTN2_TXT=(0.8, 0.85, 1, 1), MARK_RGBA=(0.62, 0.78, 1, 1), MARK_COLOR='9ec7ff', HL_TEXT='000000'),
+}
+BG = CARD = TXT = BODY = ACCENT = GRAY = NAV = NAV_TXT = BTN2 = BTN2_TXT = None
+
+
+def apply_theme(name):
+    """Переключает цвета (глобальные переменные модуля); интерфейс после этого нужно пересоздать."""
+    g = globals()
+    t = THEMES.get(name, THEMES['day'])
+    for k, v in t.items():
+        if k not in ('MARK_COLOR', 'HL_TEXT'):
+            g[k] = v
+    textmodel.MARK_COLOR = t['MARK_COLOR']
+    textmodel.HL_TEXT = t['HL_TEXT']
+
+
+apply_theme('day')
 YELLOW = (1, 1, 0, 1)                    # слово запроса: #FFFF00 (как на ПК)
 YELLOW_SOFT = (1, 1, 0.6, 1)             # часть слова: #FFFF99
-MARK_RGBA = (0.04, 0.16, 0.55, 1)        # линия подчёркивания, тёмно-синий
 SEL_BLUE = (0.67, 0.8, 1, 1)             # выделение пальцем: #AACCFF
 
 SEPARATORS = ['N1000', 'N500', 'N2000', 'NS300', 'NS800', 'Numeric', 'ExcelRow1']
@@ -113,7 +133,7 @@ class SelectableText(Label):
     TAP_MAX_MOVE = 12            # dp: больше — это уже прокрутка, а не касание
 
     def __init__(self, card, on_select, on_hint=lambda t: None, font_pt=16, on_activate=lambda w: None, **kw):
-        kw.setdefault('color', (0.05, 0.05, 0.05, 1))
+        kw.setdefault('color', BODY)
         super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(font_pt), **kw)
         self.card, self.on_select, self.on_hint, self.on_activate = card, on_select, on_hint, on_activate
         self.sel = None
@@ -303,9 +323,9 @@ class SearchScreen(Screen):
         if c.get('paging'):
             pg = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
             prev = Button(text='← Назад', disabled=not c['paging']['prev'], background_normal='',
-                          background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+                          background_color=BTN2, color=BTN2_TXT)
             nxt = Button(text='Дальше →', disabled=not c['paging']['next'], background_normal='',
-                         background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+                         background_color=BTN2, color=BTN2_TXT)
             prev.bind(on_release=lambda *_: self.ctl.shift_card(key, -1))
             nxt.bind(on_release=lambda *_: self.ctl.shift_card(key, 1))
             pg.add_widget(prev)
@@ -314,7 +334,7 @@ class SearchScreen(Screen):
             box.add_widget(pg)
         if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
-                          background_normal='', background_color=(0.9, 0.92, 0.97, 1), color=ACCENT)
+                          background_normal='', background_color=BTN2, color=BTN2_TXT)
             more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
             box.add_widget(more)
         from kivy.graphics import RoundedRectangle
@@ -335,6 +355,10 @@ class BooksScreen(Screen):
         bar.add_widget(btn('↻', self.ctl.refresh, color=GRAY, size_hint_x=None, width=dp(64), font_size=sp(30), bold=True))
         bar.add_widget(btn('Индексировать', self.index_needed, color=GRAY))
         root.add_widget(bar)
+        bar2 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+        bar2.add_widget(btn('Дневник', self.app.open_diary))
+        bar2.add_widget(btn('Дополнение книги', self.app.open_append))
+        root.add_widget(bar2)
         self.status = mlabel('', font_size=sp(13))
         self.status.color = ACCENT
         root.add_widget(self.status)
@@ -420,73 +444,76 @@ class BooksScreen(Screen):
         pop.open()
 
 
+class ShareIcon(Widget):
+    """Системная пиктограмма «поделиться»: три жирные точки, соединённые в виде «<»."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *a):
+        from kivy.graphics import Ellipse, Line
+        self.canvas.clear()
+        cx, cy, s = self.center_x, self.center_y, min(self.width, self.height)
+        r = s * 0.09
+        pts = [(cx + s * 0.18, cy + s * 0.22), (cx - s * 0.18, cy), (cx + s * 0.18, cy - s * 0.22)]
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            Line(points=[pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[2][0], pts[2][1]], width=dp(1.6))
+            for x, y in pts:
+                Ellipse(pos=(x - r, y - r), size=(2 * r, 2 * r))
+
+
 class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name='settings', **kw)
         self.app, self.ctl = app, app.ctl
         root = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
-        brief = BoxLayout(size_hint_y=None, height=dp(44))
-        brief.add_widget(mlabel('Краткий вид (только предложения с совпадениями)'))
-        sw = Switch(active=self.ctl.config.get_bool('brief_view', False), size_hint_x=None, width=dp(90))
-        sw.bind(active=lambda w, v: (self.ctl.set_setting('brief_view', 1 if v else 0), self.ctl._publish()))
-        brief.add_widget(sw)
-        root.add_widget(brief)
+        self.set_btn = btn('Настройки ▾', self.toggle_settings, color=GRAY)
+        root.add_widget(self.set_btn)
+        self.set_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
+        root.add_widget(self.set_box)
         font = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         self.font_label = mlabel(f"Размер шрифта: {self.ctl.config.get_int('font_size', 16)}")
         font.add_widget(self.font_label)
         font.add_widget(btn('−', lambda: self.font(-1), size_hint_x=None, width=dp(60)))
         font.add_widget(btn('+', lambda: self.font(1), size_hint_x=None, width=dp(60)))
         root.add_widget(font)
-        root.add_widget(btn('Дневник', self.app.open_diary))
-        root.add_widget(btn('Дополнить книгу…', self.app.open_append))
-        root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед «Поделиться»
-        self.share_btn = btn('Поделиться ▾', self.toggle_share, color=GRAY)
-        root.add_widget(self.share_btn)
-        self.share_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
-        self._share_items = (('Подчёркнутое (TXT)', lambda: self.export('txt')),
-                             ('Подчёркнутое (Word, DOCX)', lambda: self.export('docx')),
-                             ('Конспект', self.share_conspect),
-                             ('Дневник', self.share_diary))
-        root.add_widget(self.share_box)
-        root.add_widget(Widget(size_hint_y=None, height=dp(24)))
-        root.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
+        theme = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        cur = self.ctl.config.get('theme', 'day')
+        theme.add_widget(btn('Обычный', lambda: self.app.set_theme('day'),
+                             color=ACCENT if cur != 'night' else GRAY))
+        theme.add_widget(btn('Ночной (экономит заряд)', lambda: self.app.set_theme('night'),
+                             color=ACCENT if cur == 'night' else GRAY))
+        root.add_widget(theme)
+        root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед «Экспорт»
+        root.add_widget(btn('Экспорт', self.app.open_export, color=GRAY))
         self.info = mlabel('', font_size=sp(13))
         root.add_widget(self.info)
         root.add_widget(BoxLayout())
         self.add_widget(root)
 
-    def export(self, fmt):
-        path = self.ctl.export_marks(fmt)
-        if path:
-            share_file(path, self.ctl.on_status)
+    def toggle_settings(self):
+        """Скрытые элементы не лежат в разметке (иначе перехватывали бы нажатия)."""
+        if self.set_box.children:
+            self.set_box.clear_widgets()
+            self.set_box.height = 0
+            self.set_btn.text = 'Настройки ▾'
+            return
+        brief = BoxLayout(size_hint_y=None, height=dp(48))
+        brief.add_widget(mlabel('Краткий вид (только предложения с совпадениями); выключено — полный'))
+        sw = Switch(active=self.ctl.config.get_bool('brief_view', False), size_hint_x=None, width=dp(90))
+        sw.bind(active=lambda w, v: (self.ctl.set_setting('brief_view', 1 if v else 0), self.ctl._publish()))
+        brief.add_widget(sw)
+        self.set_box.add_widget(brief)
+        self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
+        self.set_box.height = dp(48) + dp(44) + dp(6)
+        self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
         self.font_label.text = f"Размер шрифта: {self.app.change_font(delta)}"
 
-    def toggle_share(self):
-        """Скрытые кнопки не должны лежать в разметке: даже невидимые, они перехватывали бы нажатия."""
-        if self.share_box.children:
-            self.share_box.clear_widgets()
-            self.share_box.height = 0
-            self.share_btn.text = 'Поделиться ▾'
-            return
-        for label, fn in self._share_items:
-            self.share_box.add_widget(btn(label, fn, color=(0.35, 0.37, 0.45, 1)))
-        self.share_box.height = (dp(44) + dp(6)) * len(self._share_items) - dp(6)
-        self.share_btn.text = 'Поделиться ▴'
-
     def add_shortcut(self):
         add_home_shortcut(self.ctl.on_status)
-
-    def share_diary(self):
-        path = self.ctl.diary_file()
-        if path:
-            share_file(path, self.ctl.on_status)
-
-    def share_conspect(self):
-        path = self.ctl.conspect_file()
-        if path:
-            share_file(path, self.ctl.on_status)
 
     def on_pre_enter(self, *a):
         v = self.ctl.vector_status()
@@ -503,8 +530,34 @@ class SinevaApp(App):
     title = 'Синева+'
 
     def build(self):
-        Window.clearcolor = BG
         self.ctl = Controller(ui_post=ui_post, schedule=schedule)
+        apply_theme(self.ctl.config.get('theme', 'day'))
+        root = self._make_root()
+        Window.bind(on_keyboard=self._on_key)
+        self.ctl.publish_books()
+        if not self.ctl.library.books:
+            self.sm.current = 'books'
+        return root
+
+    def set_theme(self, name):
+        """Обычная/ночная тема: цвета меняются, интерфейс пересоздаётся (вкладка и запрос сохраняются)."""
+        if name == self.ctl.config.get('theme', 'day'):
+            return
+        self.ctl.set_setting('theme', name)
+        apply_theme(name)
+        cur, query = self.sm.current, self.search_s.input.text
+        old = self.root
+        new = self._make_root()
+        Window.remove_widget(old)
+        Window.add_widget(new)
+        self.root = new
+        self.search_s.input.text = query
+        self.sm.current = cur
+        self.ctl.publish_books()
+        self.ctl._publish()
+
+    def _make_root(self):
+        Window.clearcolor = BG
         self.sm = ScreenManager(transition=NoTransition())
         self.search_s = SearchScreen(self)
         self.books_s = BooksScreen(self)
@@ -521,14 +574,10 @@ class SinevaApp(App):
         root.add_widget(self.sm)
         nav = BoxLayout(size_hint_y=None, height=dp(52))
         for label, name in (('Поиск', 'search'), ('Книги', 'books'), ('Ещё', 'settings')):
-            b = Button(text=label, background_normal='', background_color=(0.92, 0.93, 0.96, 1), color=ACCENT)
+            b = Button(text=label, background_normal='', background_color=NAV, color=NAV_TXT)
             b.bind(on_release=lambda *_a, n=name: setattr(self.sm, 'current', n))
             nav.add_widget(b)
         root.add_widget(nav)
-        Window.bind(on_keyboard=self._on_key)
-        c.publish_books()
-        if not c.library.books:
-            self.sm.current = 'books'
         return root
 
     def on_resume(self):
@@ -555,7 +604,7 @@ class SinevaApp(App):
         self.ctl._publish()
         return size
 
-    # ---------- «Дополнить» ----------
+    # ---------- «Дополнение книги» ----------
     def open_append(self):
         ctl = self.ctl
         books = ctl.library.books
@@ -572,7 +621,7 @@ class SinevaApp(App):
         text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
                          size_hint_y=0.6, font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = top_popup('Дополнить книгу', box, dp(420))
+        pop = top_popup('Дополнение книги', box, dp(420))
 
         def show_last(*_):
             last.text = 'Загрузка…'
@@ -598,6 +647,60 @@ class SinevaApp(App):
             box.add_widget(w)
         pop.open()
         show_last()
+
+    def open_export(self):
+        """Окно «Экспорт» на весь экран: что экспортировать + список ранее экспортированных файлов."""
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        pop = Popup(title='Экспорт', content=box, size_hint=(1, 1), auto_dismiss=False, title_size=sp(16))
+        state = {'sel': None}
+        listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+        listing.bind(minimum_height=listing.setter('height'))
+
+        def fill():
+            listing.clear_widgets()
+            items = self.ctl.list_exports()
+            if not items:
+                listing.add_widget(mlabel('Экспортированных файлов пока нет', color=(1, 1, 1, 1)))
+            for name, path, mtime, size in items:
+                row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
+                chosen = state['sel'] == path
+                b = Button(text=escape_markup(name) + f"\n[size={int(sp(12))}]{max(1, size // 1024)} КБ[/size]",
+                           markup=True, halign='left', valign='middle', font_size=sp(15),
+                           background_normal='', color=(1, 1, 1, 1),
+                           background_color=ACCENT if chosen else (0.3, 0.32, 0.4, 1))
+                b.bind(size=lambda w, v: setattr(w, 'text_size', (v[0] - dp(12), v[1])))
+                b.bind(on_release=lambda *_a, p=path: (state.__setitem__('sel', p), fill()))
+                ic = Button(size_hint_x=None, width=dp(56), background_normal='', background_color=GRAY)
+                ic.add_widget(ShareIcon(size_hint=(None, None), size=(dp(56), dp(56))))
+                ic.bind(on_release=lambda *_a, p=path: share_file(p, self.ctl.on_status))
+                ic.children[0].pos = ic.pos
+                ic.bind(pos=lambda w, v: setattr(w.children[0], 'pos', v))
+                row.add_widget(b)
+                row.add_widget(ic)
+                listing.add_widget(row)
+
+        def do(fn):
+            path = fn()
+            if path:
+                state['sel'] = path
+                fill()
+
+        box.add_widget(mlabel('Что экспортировать:', color=(1, 1, 1, 1)))
+        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(4 * 46), spacing=dp(6))
+        for label, fn in (('Подчёркнутое (TXT)', lambda: self.ctl.export_marks('txt')),
+                          ('Подчёркнутое (Word, DOCX)', lambda: self.ctl.export_marks('docx')),
+                          ('Конспект', self.ctl.export_conspect),
+                          ('Дневник', self.ctl.export_diary)):
+            grid.add_widget(btn(label, lambda fn=fn: do(fn)))
+        box.add_widget(grid)
+        box.add_widget(mlabel('Экспортированные файлы (последние сверху). Значок справа — отправить '
+                              'в мессенджер, почту и т. д.:', font_size=sp(13), color=(1, 1, 1, 1)))
+        sv = ScrollView()
+        sv.add_widget(listing)
+        box.add_widget(sv)
+        box.add_widget(btn('Закрыть', pop.dismiss, color=GRAY))
+        fill()
+        pop.open()
 
     def open_diary(self):
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))

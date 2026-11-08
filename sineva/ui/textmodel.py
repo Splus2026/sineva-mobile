@@ -11,6 +11,8 @@ from ..search import escape_markup
 WORD_RE = re.compile(r'\S+\s*')                 # слово вместе с хвостовым пробелом
 SENT_END = '.!?…'
 MARK_COLOR = '0a2a8c'                           # тёмно-синий шрифт подчёркнутого
+MARK_ON_HL = '0a2a8c'                           # подчёркнутое поверх жёлтого/голубого фона
+HL_TEXT = ''                                    # цвет шрифта на подложке; в ночной теме тёмный
 
 
 def build_markup(text: str, hl, marks, sel: Optional[Tuple[int, int]] = None,
@@ -40,8 +42,12 @@ def build_markup(text: str, hl, marks, sel: Optional[Tuple[int, int]] = None,
         mark = any(s <= a and b <= e for s, e in marks)
         selected = bool(sel) and sel[0] <= a and b <= sel[1]
         piece = escape_markup(seg)
-        if mark:
-            piece = f"[color={MARK_COLOR}]{piece}[/color]"
+        if prio or selected:                             # на яркой подложке шрифт всегда тёмный
+            col = MARK_ON_HL if mark else HL_TEXT
+        else:
+            col = MARK_COLOR if mark else ''
+        if col:
+            piece = f"[color={col}]{piece}[/color]"
         styled = prio or mark or selected or (select_mode and seg.strip())
         if styled:
             rid = len(refs)

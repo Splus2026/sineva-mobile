@@ -31,7 +31,7 @@ class Clock:
 class App(W):
     def run(self): pass
 mod('kivy'); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
-mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None))
+mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None, remove_widget=lambda w: None, add_widget=lambda w: None))
 mod('kivy.metrics', dp=lambda x: x if isinstance(x, (int, float)) else 10, sp=lambda x: x)
 for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('label', 'Label'),
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),
@@ -63,10 +63,15 @@ app.search_s.search()
 card = app.search_s.box.children[0]
 c.show_more()
 app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter(); app.books_s.add()
-app.settings_s.export('txt')
+app.open_export()
+app.settings_s.toggle_settings(); app.settings_s.toggle_settings()
+app.root = object(); app.set_theme('night'); assert c.config.get('theme') == 'night'
+from sineva.ui import textmodel as _tm; assert _tm.HL_TEXT == '000000'
+app.set_theme('day'); assert _tm.HL_TEXT == ''
+assert c.export_marks('txt') is None or c.list_exports()
 app.open_append()
 app.open_diary()
-app.settings_s.share_diary()
+assert c.export_conspect() is None or c.list_exports()
 # выделение: долгое нажатие на слово и подчёркивание
 from sineva.ui.app import SelectableText
 cd = c.outcome and [x for x in c._publish.__self__.search.visible(c.outcome)]
