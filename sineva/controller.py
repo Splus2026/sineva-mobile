@@ -106,6 +106,15 @@ class Controller:
         self.library.scan()
         self.selected &= {b.file_name for b in self.library.books}
         self.publish_books()
+        self._auto_index()
+
+    def _auto_index(self) -> None:
+        """Автоматическая переиндексация (настройка «Настройки»): новые и изменённые книги индексируются сами."""
+        if not self.config.get_bool('auto_index', False) or getattr(self, '_indexing', False):
+            return
+        names = [b.file_name for b in self.library.books if b.state != 'ready']
+        if names:
+            self.index_books(names)
 
     def publish_books(self):
         self.on_books(self.book_rows())
@@ -124,6 +133,7 @@ class Controller:
         books = [b for b in books if b]
         if not books:
             return
+        self._indexing = True
 
         def work():
             for book in books:
@@ -134,6 +144,7 @@ class Controller:
                 except Exception as e:
                     self.ui_post(lambda b=book, e=e: self.on_status(f"Ошибка индексации {b.display}: {e}"))
             def done():
+                self._indexing = False
                 self.selected |= {b.file_name for b in books if b.ready}
                 self._save_selected()
                 self.publish_books()

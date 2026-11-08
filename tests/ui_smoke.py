@@ -37,7 +37,7 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),
              ('spinner', 'Spinner'), ('switch', 'Switch'), ('textinput', 'TextInput')]:
     mod('kivy.uix.' + n, **{c: W})
-mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W)
+mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W); mod('kivy.uix.image', Image=W)
 mod('kivy.uix.filechooser', FileChooserListView=W)
 mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W)
 clip = {}
@@ -64,6 +64,7 @@ card = app.search_s.box.children[0]
 c.show_more()
 app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter(); app.books_s.add()
 app.open_export()
+c.set_setting('auto_index', 1); c.rescan(); c.set_setting('auto_index', 0)
 app.settings_s.toggle_settings(); app.settings_s.toggle_settings()
 app.root = object(); app.set_theme('night'); assert c.config.get('theme') == 'night'
 from sineva.ui import textmodel as _tm; assert _tm.HL_TEXT == '000000'

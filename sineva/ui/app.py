@@ -1,4 +1,5 @@
 """Интерфейс «Синева+ Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
+import os
 import time
 
 from kivy.app import App
@@ -400,7 +401,7 @@ class BooksScreen(Screen):
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         bar = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
         bar.add_widget(btn('Добавить', self.add))
-        bar.add_widget(btn('↻', self.ctl.refresh, color=GRAY, size_hint_x=None, width=dp(64), font_size=sp(30), bold=True))
+        bar.add_widget(icon_button(RefreshIcon(), self.ctl.refresh, dp(64), GRAY))
         bar.add_widget(btn('Индексировать', self.index_needed, color=GRAY))
         root.add_widget(bar)
         bar2 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
@@ -464,9 +465,10 @@ class BooksScreen(Screen):
                       f"{escape_markup(r['status'])} · {r['separator']} · {r['size_kb']} КБ[/color][/size]")
         info.size_hint_y = 1
         info.bind(height=lambda *_: None)
-        edit = Button(text='⚙', size_hint_x=None, width=dp(56), background_normal='', background_color=GRAY,
-                      font_size=sp(28), bold=True, color=(1, 1, 1, 1))
-        edit.bind(on_release=lambda *_a, r=r: self.edit(r))
+        from kivy.uix.image import Image
+        pic = Image(source=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'edit.png'),
+                    allow_stretch=True, keep_ratio=True)
+        edit = icon_button(pic, lambda r=r: self.edit(r), dp(56), (0.937, 0.953, 0.98, 1))
         for w in (cb, info, edit):
             row.add_widget(w)
         return row
@@ -491,6 +493,43 @@ class BooksScreen(Screen):
         for w in (name, sep, row):
             box.add_widget(w)
         pop.open()
+
+
+class RefreshIcon(Widget):
+    """Круговая стрелка (обновить): дуга почти в полный круг со стрелкой на конце."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *a):
+        import math
+        from kivy.graphics import Line, Triangle
+        self.canvas.clear()
+        cx, cy = self.center_x, self.center_y
+        r = min(self.width, self.height) * 0.26
+        a0, a1 = 25, 320
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            Line(circle=(cx, cy, r, a0, a1), width=dp(2.2))
+            t = math.radians(a1)
+            ex, ey = cx + r * math.sin(t), cy + r * math.cos(t)           # конец дуги
+            dx, dy = math.cos(t), -math.sin(t)                             # направление движения (по часовой)
+            nx, ny = -dy, dx
+            h, w = r * 0.75, r * 0.6
+            Triangle(points=[ex + dx * h, ey + dy * h, ex + nx * w, ey + ny * w, ex - nx * w, ey - ny * w])
+
+
+def icon_button(icon_widget, cb, width, bg):
+    b = Button(size_hint_x=None, width=width, background_normal='', background_color=bg)
+    icon_widget.size_hint = (None, None)
+    b.add_widget(icon_widget)
+
+    def place(*a):
+        icon_widget.size = b.size
+        icon_widget.pos = b.pos
+    b.bind(pos=place, size=place)
+    b.bind(on_release=lambda *_: cb())
+    return b
 
 
 class ShareIcon(Widget):
@@ -549,8 +588,8 @@ class SettingsScreen(Screen):
             self.set_btn.text = 'Настройки ▾'
             return
         def view_text():
-            return 'Вид: краткий (только предложения с совпадениями)' if self.ctl.config.get_bool('brief_view', False) \
-                else 'Вид: полный (топик целиком)'
+            return 'Вид краткий' if self.ctl.config.get_bool('brief_view', False) \
+                else 'Вид полный'
 
         def flip():
             self.ctl.set_setting('brief_view', 0 if self.ctl.config.get_bool('brief_view', False) else 1)
@@ -558,8 +597,21 @@ class SettingsScreen(Screen):
             self.ctl._publish()
         vb = btn(view_text(), flip)
         self.set_box.add_widget(vb)
+
+        def idx_text():
+            return 'Переиндексация автоматическая' if self.ctl.config.get_bool('auto_index', False) \
+                else 'Переиндексация ручная'
+
+        def flip_idx():
+            on = not self.ctl.config.get_bool('auto_index', False)
+            self.ctl.set_setting('auto_index', 1 if on else 0)
+            ib.text = idx_text()
+            if on:
+                self.ctl.rescan()
+        ib = btn(idx_text(), flip_idx)
+        self.set_box.add_widget(ib)
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.height = dp(44) * 2 + dp(6)
+        self.set_box.height = dp(44) * 3 + dp(12)
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):

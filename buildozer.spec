@@ -5,7 +5,7 @@ package.domain = org.sineva
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ini
 source.exclude_dirs = tests,bin,.buildozer,.github
-version = 0.1.0
+version = 1.0
 # sqlite3 нужен для индексов; в p4a он собирается со своим SQLite (FTS5/trigram может отсутствовать —
 # тогда приложение само переходит на медленный, но рабочий перебор).
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,sqlite3,android,pyjnius,androidstorage4kivy
