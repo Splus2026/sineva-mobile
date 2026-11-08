@@ -274,13 +274,17 @@ try:
     ctl.config.set('page_size', 3)
     ctl.submit_query('терпение')
     check('сначала 3 карточки', len(got['cards']) == 3 and got['total'] == 60 and ctl.more_label.startswith('Показать ещё'), ctl.more_label)
-    check('в статусе замеры и режим', 'поиск' in got['status'] and 'словарь' in got['status'] and 'лучшие 20' in got['status'], got['status'])
+    check('в статусе замеры и режим', 'поиск' in got['status'] and 'словарь' in got['status'], got['status'])
     for _ in range(6):
         ctl.show_more()
-    check('внутри лучших 20 докладывается по 3', len(got['cards']) == 20 or len(got['cards']) == 21 - 1 or len(got['cards']) <= 20, str(len(got['cards'])))
+    check('карточки докладываются по 3 до 20', len(got['cards']) == 20, str(len(got['cards'])))
+    first_key = got['cards'][0]['key']
     ctl.show_more()
-    check('после 20 кнопка расширяет лучшие', len(got['cards']) > 20 and ctl.cap == 40, f"{len(got['cards'])} cap={ctl.cap}")
-    check('подпись кнопки расширения', ctl.more_label.startswith('Ещё') or ctl.more_label.startswith('Показать'), ctl.more_label)
+    check('после 20 первые 3 выгружаются, окно не растёт', len(got['cards']) == 20 and got['cards'][0]['key'] != first_key
+          and ctl.win_start == 4 and ctl.pending_append == {'drop': 3, 'new': 3}, f"{len(got['cards'])} start={ctl.win_start}")
+    check('выгруженные карточки освобождают текст', ctl.outcome.results[0]['content'] is None)
+    check('подпись кнопки', ctl.more_label == 'Показать ещё 3', ctl.more_label)
+    check('номера карточек продолжаются', '5.' in got['cards'][0]['header'], got['cards'][0]['header'])
     for b in ('bibl.txt', 'Грани.txt'):
         ctl.toggle_book(b)
     ctl.config.set('page_size', 50)
@@ -293,12 +297,9 @@ try:
     ctl.config.set('page_size', 50)
     ctl.submit_query('редкаяфраза')
     lc = [c for c in got['cards'] if c['key'].startswith('Длинная.txt')][0]
-    check('длинный топик показан окном', len(lc['text']) <= ctl.MAX_CHARS + 10 and lc['paging'] and lc['paging']['next'], str(len(lc['text'])))
-    check('окно содержит совпадение и подсветку', 'редкаяфраза' in lc['text'] and lc['hl'])
-    ctl.shift_card(lc['key'], 1)
-    lc2 = [c for c in got['cards'] if c['key'].startswith('Длинная.txt')][0]
-    check('«Дальше» двигает окно', lc2['text'] != lc['text'])
-    ctl.shift_card(lc['key'], -1)
+    check('длинный топик режется на куски', len(lc['chunks']) > 1 and all(e - st <= ctl.MAX_CHARS for st, e in lc['chunks'])
+          and lc['chunks'][-1][1] == len(lc['text']), str(lc['chunks'][:3]))
+    check('текст полный, подсветка есть', 'редкаяфраза' in lc['text'] and lc['hl'] and len(lc['text']) > ctl.MAX_CHARS)
     ctl.mark_selection(lc['key'], lc['text'].index('редкаяфраза'), lc['text'].index('редкаяфраза') + 11, publish=False)
     lc3 = ctl.card_marks(lc['key'])
     check('подчёркивание в окне длинного топика', lc3 and lc['text'][lc3[0][0]:lc3[0][1]].strip().startswith('редкаяфраза'), str(lc3))
@@ -358,26 +359,27 @@ try:
     ctl2 = Controller(paths, run_async=False)
     check('выбранные книги помнятся', ctl2.selected == ctl.selected)
 
-    # ---------- режим чтения «**» ----------
+    # ---------- вкладка «Чтение» ----------
     rc = Controller(paths, run_async=False)
-    rg = {'cards': None, 'status': '', 'ask': None}
-    rc.on_cards = lambda cards, total, more: rg.update(cards=cards, total=total, more=more)
+    rg = {'cards': None, 'status': '', 'more': None}
+    def on_cards(cards, total, more): rg.update(cards=cards, total=total, more=more)
+    rc.on_cards = on_cards
     rc.on_status = lambda t: rg.update(status=t)
     rc.config.set('page_size', 2)
     rc.selected = {'bibl.txt', 'Грани.txt'}
-    rc.submit_query('**')
-    check('«**» при двух книгах — подсказка', 'ровно одну' in rg['status'] and rg['cards'] is None, rg['status'])
+    rc.set_tab('read')
+    check('чтение при двух книгах — подсказка', 'ровно одну' in rg['status'] and not rg['cards'], rg['status'])
+    rc.set_tab('search')
     rc.selected = {'bibl.txt'}
-    rc.submit_query('**')
-    check('«**»: читаются блоки подряд', rg['cards'] and len(rg['cards']) == 2 and rc.reading, rg['status'])
-    first_text = rg['cards'][0]['text']
+    rc.set_tab('read')
+    check('чтение: блоки подряд', rg['cards'] and len(rg['cards']) == 2 and rc.reading, rg['status'])
     check('чтение: заголовок «Блок 1»', 'Блок 1' in rg['cards'][0]['header'])
+    first_text = rg['cards'][0]['text']
     rc.show_more()
-    check('чтение: «дальше» — следующие блоки', 'Блок 3' in rg['cards'][0]['header'] and rg['cards'][0]['text'] != first_text)
-    pos = rc.config.get('read_pos:bibl.txt')
-    rc.read_prev()
-    check('чтение: «назад»', 'Блок 1' in rg['cards'][0]['header'])
-    rc.show_more()
+    check('чтение: «Показать ещё» дорисовывает', len(rg['cards']) == 4 and rg['cards'][2]['text'] != first_text
+          and rc.pending_append == {'drop': 0, 'new': 2} or rc.pending_append is None)
+    rc.set_tab('search'); rc.set_tab('read')
+    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 1' in rg['cards'][0]['header'])
     rc2 = Controller(paths, run_async=False)
     rg2 = {}
     rc2.on_cards = lambda cards, total, more: rg2.update(cards=cards)
@@ -385,14 +387,34 @@ try:
     rc2.selected = {'bibl.txt'}
     asked = {}
     rc2.on_ask_continue = lambda name, n, cont, start: asked.update(n=n, cont=cont, start=start)
-    rc2.submit_query('**')
-    check('место чтения помнится: предложено продолжить', asked.get('n') == 3, str(asked))
+    rc2.set_tab('read')
+    check('прошлое место помнится: предложено продолжить', asked.get('n', 0) >= 3, str(asked))
     asked['start']()
     check('«С начала» — блок 1', 'Блок 1' in rg2['cards'][0]['header'])
-    rc2.submit_query('**'); asked['cont']()
-    check('«Продолжить» — блок 3', 'Блок 3' in rg2['cards'][0]['header'])
-    rc2.submit_query('довер')
-    check('обычный поиск выключает режим чтения', rc2.reading is None)
+    rc2.set_tab('search'); rc2.reading = None; rc2._states.pop('read', None); rc2.set_tab('read')
+    asked['cont']()
+    check('«Продолжить» — с последнего места', 'Блок' in rg2['cards'][0]['header'] and rg2['cards'][0]['header'] != '')
+    # скользящее окно: после WINDOW карточек первые выгружаются
+    rc3 = Controller(paths, run_async=False)
+    rc3.on_cards = lambda *a: None; rc3.on_status = lambda t: None
+    rc3.selected = {'bibl.txt'}; rc3.config.set('page_size', 3)
+    rc3.WINDOW = 6
+    rc3.set_tab('read')
+    for _ in range(4):
+        if rc3.reading['has_next']:
+            rc3.show_more()
+    check('окно чтения не растёт сверх лимита', len(rc3.outcome.results) <= 6, str(len(rc3.outcome.results)))
+    rc3.set_tab('search')
+    rc3.config.set('page_size', 3)
+    rc3.WINDOW = 6
+    rc3.submit_query('довер')
+    n_vis = len(rc3.search.visible(rc3.outcome))
+    for _ in range(5):
+        rc3.show_more()
+    check('окно поиска ограничено', rc3.shown <= 6 and rc3.win_start >= 0, f"{rc3.shown} {rc3.win_start} {n_vis}")
+    check('ручная индексация: maybe_index не индексирует', (rc3.config.set('auto_index', 0), rc3.maybe_index(['bibl.txt']))[1] is False)
+    check('длинный текст режется на куски', all(b - a <= rc3.MAX_CHARS for a, b in Controller.chunks('слово ' * 2000)) and
+          Controller.chunks('слово ' * 2000)[-1][1] == len('слово ' * 2000))
 
     # ---------- векторы: архитектура ----------
     vs = ctl2.vector_status()

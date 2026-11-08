@@ -112,13 +112,13 @@ def mlabel(text='', **kw):
     return lb
 
 
-def keep_scroll(sv: ScrollView, rebuild):
+def keep_scroll(sv: ScrollView, rebuild, shift=0):
     """Перестраивает содержимое, сохраняя положение прокрутки в пикселях (список не прыгает в начало)."""
     content = sv.children[0] if sv.children else None
     if content is None:
         rebuild()
         return
-    off = (1 - sv.scroll_y) * max(0, content.height - sv.height)
+    off = max(0, (1 - sv.scroll_y) * max(0, content.height - sv.height) - shift)
     rebuild()
 
     def restore(dt):
@@ -166,6 +166,11 @@ def no_bubble(ti):
     ti.use_bubble = False
     ti.use_handles = False
     return ti
+
+
+def clip_spans(spans, a, b):
+    """Участки (начало, конец) в координатах всего текста -> в координатах куска [a, b)."""
+    return [(max(s_, a) - a, min(e_, b) - a) for s_, e_ in spans if e_ > a and s_ < b]
 
 
 class SelectableText(Label):
@@ -293,9 +298,13 @@ class SelectableText(Label):
 
 # ===================================================================
 class SearchScreen(Screen):
-    def __init__(self, app, **kw):
-        super().__init__(name='search', **kw)
-        self.app, self.ctl = app, app.ctl
+    def __init__(self, app, reading=False, **kw):
+        super().__init__(name='read' if reading else 'search', **kw)
+        self.app, self.ctl, self.reading_screen = app, app.ctl, reading
+        self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
+        self._cards = []                 # их виджеты
+        self._more_btn = None
+        self._widgets = {}               # ключ -> виджеты-куски текста
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
         self.input = no_bubble(TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
@@ -313,13 +322,15 @@ class SearchScreen(Screen):
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
-        self.status = mlabel('Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
+        self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — блоки пойдут подряд.' if reading else
+                             'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
         self.sv, self.box = vlist()
         self._active = None
         self._suffix = ''
         self._base = ''
-        root.add_widget(top)
+        if not reading:
+            root.add_widget(top)
         root.add_widget(self.status)
         root.add_widget(self.sv)
         self.add_widget(root)
@@ -337,23 +348,54 @@ class SearchScreen(Screen):
     def show_cards(self, cards, total, more):
         t0 = time.time()
         self._suffix = ''
-
-        reading = self.ctl.reading
+        ctl = self.ctl
+        ev, ctl.pending_append = ctl.pending_append, None
+        reading = ctl.reading
         fresh = bool(reading and reading.pop('fresh', False))
+        keys = [c['key'] for c in cards]
 
-        def rebuild():
+        def more_button():
+            self._more_btn = btn(ctl.more_label or 'Показать ещё', ctl.show_more)
+            self.box.add_widget(self._more_btn)
+
+        def full():
             self.box.clear_widgets()
-            if reading and reading['has_prev']:
-                self.box.add_widget(btn('◀ Предыдущие блоки', self.ctl.read_prev))
+            self._cards, self._widgets, self._more_btn = [], {}, None
             for c in cards:
-                self.box.add_widget(self._card(c))
+                w = self._card(c)
+                self._cards.append(w)
+                self.box.add_widget(w)
             if more:
-                self.box.add_widget(btn(self.ctl.more_label or f'Показать ещё (всего {total})', self.ctl.show_more))
-            elif not cards and self.ctl.query.strip():
+                more_button()
+            elif not cards and not self.reading_screen and ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
-        keep_scroll(self.sv, rebuild)
+
+        shift = 0
+        if ev and self._keys and keys[:len(self._keys) - ev['drop']] == self._keys[ev['drop']:]:
+            # «Показать ещё»: уже нарисованные карточки не трогаем; сверху убираем ушедшие за окно, снизу дорисовываем
+            drop, new = ev['drop'], ev['new']
+            gone = self._cards[:drop]
+            shift = sum(w.height for w in gone) + dp(6) * drop
+            for k in self._keys[:drop]:
+                self._widgets.pop(k, None)
+            for w in gone:
+                self.box.remove_widget(w)
+            self._cards = self._cards[drop:]
+            if self._more_btn is not None:
+                self.box.remove_widget(self._more_btn)
+                self._more_btn = None
+            for c in cards[len(cards) - new:]:
+                w = self._card(c)
+                self._cards.append(w)
+                self.box.add_widget(w)
+            if more:
+                more_button()
+            keep_scroll(self.sv, lambda: None, shift)
+        else:
+            keep_scroll(self.sv, full)
+        self._keys = keys
         if fresh:
-            self.sv.scroll_y = 1                                 # новая страница чтения — с начала
+            self.sv.scroll_y = 1                                 # новое чтение — с начала
         built = (time.time() - t0) * 1000
 
         def done(dt):                                      # после первого кадра: виджеты созданы, текстуры нарисованы
@@ -371,23 +413,18 @@ class SearchScreen(Screen):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
-        body = SelectableText(c, self.app.on_selection, self.ctl.on_status,
-                              self.ctl.config.get_int('font_size', 16), self._activate)
         key = c['key']
         box.add_widget(head)
-        box.add_widget(body)
-        if c.get('paging'):
-            pg = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
-            prev = Button(text='← Назад', disabled=not c['paging']['prev'], background_normal='',
-                          background_color=BTN2, color=BTN2_TXT)
-            nxt = Button(text='Дальше →', disabled=not c['paging']['next'], background_normal='',
-                         background_color=BTN2, color=BTN2_TXT)
-            prev.bind(on_release=lambda *_: self.ctl.shift_card(key, -1))
-            nxt.bind(on_release=lambda *_: self.ctl.shift_card(key, 1))
-            pg.add_widget(prev)
-            pg.add_widget(mlabel(c['paging']['info'], font_size=sp(12)))
-            pg.add_widget(nxt)
-            box.add_widget(pg)
+        parts = []
+        for a_, b_ in c['chunks']:                    # длинный текст — несколькими виджетами подряд
+            sub = dict(c, text=c['text'][a_:b_], offset=a_,
+                       hl=[(max(s_, a_) - a_, min(e_, b_) - a_, p_) for s_, e_, p_ in c['hl'] if e_ > a_ and s_ < b_],
+                       marks=clip_spans(c['marks'], a_, b_))
+            w = SelectableText(sub, self.app.on_selection, self.ctl.on_status,
+                               self.ctl.config.get_int('font_size', 16), self._activate)
+            parts.append(w)
+            box.add_widget(w)
+        self._widgets[key] = parts
         if self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading:         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
                           background_normal='', background_color=BTN2, color=BTN2_TXT)
@@ -429,7 +466,7 @@ class BooksScreen(Screen):
         def got(paths):
             added = self.ctl.add_books(paths)
             if added:
-                self.ctl.index_books(added)
+                self.ctl.maybe_index(added)
         pick_files(lambda p: Clock.schedule_once(lambda dt: got(p), 0),
                    self.ctl.config.get('picker_start', ''),
                    lambda uri: self.ctl.set_setting('picker_start', uri),
@@ -493,8 +530,10 @@ class BooksScreen(Screen):
 
         def save():
             pop.dismiss()
-            self.ctl.edit_book(r['file_name'], name.text.strip() or r['display'], sep.text.strip() or r['separator'])
-            self.ctl.index_books([r['file_name']])
+            new_sep = sep.text.strip() or r['separator']
+            self.ctl.edit_book(r['file_name'], name.text.strip() or r['display'], new_sep)
+            if new_sep != r['separator']:                      # индекс зависит только от разделителя
+                self.ctl.maybe_index([r['file_name']])
         row.add_widget(btn('Сохранить', save))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
         for w in (name, sep, row):
@@ -558,6 +597,22 @@ class ShareIcon(Widget):
                 Ellipse(pos=(x - r, y - r), size=(2 * r, 2 * r))
 
 
+def segmented(options, current, on_pick):
+    """Ряд кнопок-переключателей (выбранная подсвечена): options = [(название, значение)]."""
+    row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+    buttons = []
+
+    def pick(value):
+        for b, v in buttons:
+            b.background_color = ACCENT if v == value else GRAY
+        on_pick(value)
+    for label, value in options:
+        b = btn(label, lambda v=value: pick(v), color=ACCENT if value == current else GRAY)
+        buttons.append((b, value))
+        row.add_widget(b)
+    return row
+
+
 class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name='settings', **kw)
@@ -594,31 +649,17 @@ class SettingsScreen(Screen):
             self.set_box.height = 0
             self.set_btn.text = 'Настройки ▾'
             return
-        def view_text():
-            return 'Вид краткий' if self.ctl.config.get_bool('brief_view', False) \
-                else 'Вид полный'
-
-        def flip():
-            self.ctl.set_setting('brief_view', 0 if self.ctl.config.get_bool('brief_view', False) else 1)
-            vb.text = view_text()
-            self.ctl._publish()
-        vb = btn(view_text(), flip)
-        self.set_box.add_widget(vb)
-
-        def idx_text():
-            return 'Переиндексация автоматическая' if self.ctl.config.get_bool('auto_index', False) \
-                else 'Переиндексация ручная'
-
-        def flip_idx():
-            on = not self.ctl.config.get_bool('auto_index', False)
-            self.ctl.set_setting('auto_index', 1 if on else 0)
-            ib.text = idx_text()
-            if on:
-                self.ctl.rescan()
-        ib = btn(idx_text(), flip_idx)
-        self.set_box.add_widget(ib)
+        self.set_box.add_widget(mlabel('Текст блоков'))
+        self.set_box.add_widget(segmented(
+            [('Полный', 0), ('Краткий', 1)], 1 if self.ctl.config.get_bool('brief_view', False) else 0,
+            lambda v: (self.ctl.set_setting('brief_view', v), self.ctl.dirty.update(('search', 'read')),
+                       self.ctl._publish())))
+        self.set_box.add_widget(mlabel('Индексация'))
+        self.set_box.add_widget(segmented(
+            [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
+            lambda v: (self.ctl.set_setting('auto_index', v), self.ctl.rescan() if v else None)))
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.height = dp(44) * 3 + dp(12)
+        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(6) * 4
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
@@ -642,7 +683,7 @@ class SinevaApp(App):
         root = self._make_root()
         Window.bind(on_keyboard=self._on_key)
         try:
-            Window.softinput_mode = 'resize'
+            Window.softinput_mode = 'below_target'
         except Exception:
             pass
         self.ctl.publish_books()
@@ -665,6 +706,7 @@ class SinevaApp(App):
         self.search_s.input.text = query
         self.sm.current = cur
         self.ctl.publish_books()
+        self.ctl.dirty.update(('search', 'read'))
         self.ctl._publish()
 
     def _make_root(self):
@@ -673,11 +715,12 @@ class SinevaApp(App):
         self.search_s = SearchScreen(self)
         self.books_s = BooksScreen(self)
         self.settings_s = SettingsScreen(self)
-        for s in (self.search_s, self.books_s, self.settings_s):
+        self.read_s = SearchScreen(self, reading=True)
+        for s in (self.search_s, self.read_s, self.books_s, self.settings_s):
             self.sm.add_widget(s)
         c = self.ctl
-        c.on_cards = self.search_s.show_cards
-        c.on_status = lambda t: (self.search_s.set_status(t), self.books_s.set_status(t))
+        c.on_cards = lambda *a: (self.read_s if c.tab == 'read' else self.search_s).show_cards(*a)
+        c.on_status = lambda t: (self.search_s.set_status(t), self.read_s.set_status(t), self.books_s.set_status(t))
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
         c.on_ask_continue = self.ask_continue
@@ -685,12 +728,27 @@ class SinevaApp(App):
         root = BoxLayout(orientation='vertical')
         root.add_widget(self.sm)
         nav = BoxLayout(size_hint_y=None, height=dp(52))
-        for label, name in (('Поиск', 'search'), ('Книги', 'books'), ('Ещё', 'settings')):
-            b = Button(text=label, background_normal='', background_color=NAV, color=NAV_TXT, font_size=sp(19))
-            b.bind(on_release=lambda *_a, n=name: setattr(self.sm, 'current', n))
+        self.nav_buttons = {}
+        for label, name in (('Поиск', 'search'), ('Чтение', 'read'), ('Книги', 'books'), ('Ещё', 'settings')):
+            b = Button(text=label, background_normal='', background_color=NAV, color=NAV_TXT, font_size=sp(18))
+            b.bind(on_release=lambda *_a, n=name: self.go_tab(n))
+            self.nav_buttons[name] = b
             nav.add_widget(b)
+        self.sm.bind(current=lambda w, v: self._mark_tab(v))
+        self._mark_tab(self.sm.current)
         root.add_widget(nav)
         return root
+
+    def _mark_tab(self, name):
+        """Активная вкладка выделяется цветом."""
+        for n, b in self.nav_buttons.items():
+            b.background_color = ACCENT if n == name else NAV
+            b.color = (1, 1, 1, 1) if n == name else NAV_TXT
+
+    def go_tab(self, name):
+        self.sm.current = name
+        if name in ('search', 'read'):
+            self.ctl.set_tab(name)
 
     def on_resume(self):
         self.ctl.rescan()
@@ -700,10 +758,11 @@ class SinevaApp(App):
     def on_selection(self, key, start, end, widget):
         """Без подтверждений: новое выделение подчёркивается и дублируется в конспект,
            повторное выделение подчёркнутого снимает подчёркивание."""
+        off = widget.card.get('offset', 0)                  # длинный текст состоит из нескольких кусков
         text = widget.card['text'][start:end].strip()
-        result = self.ctl.toggle_mark(key, start, end, text)
-        widget.card['marks'] = self.ctl.card_marks(key)       # обновляется только эта карточка
-        widget.clear_selection()
+        result = self.ctl.toggle_mark(key, start + off, end + off, text)
+        widget.card['marks'] = clip_spans(self.ctl.card_marks(key), off, off + len(widget.card['text']))
+        widget.clear_selection()                            # обновляется только этот кусок карточки
         if result == 'marked':
             self.ctl.on_status('Подчёркнуто и записано в конспект')
         elif result == 'unmarked':
@@ -859,6 +918,6 @@ class SinevaApp(App):
 
     def _on_key(self, window, key, *a):
         if key == 27 and self.sm.current != 'search':       # «Назад» возвращает на поиск
-            self.sm.current = 'search'
+            self.go_tab('search')
             return True
         return False

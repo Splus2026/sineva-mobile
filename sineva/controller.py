@@ -53,8 +53,14 @@ class Controller:
         self.selected = self._load_selected()
         self._token = 0
         self._timer = None
-        self.reading = None                      # режим последовательного чтения («**»): {'book','first','last','has_prev','has_next','total','base'}
+        self.tab = 'search'                     # активная вкладка с карточками: 'search' | 'read'
+        self._states = {}                       # сохранённые состояния неактивной вкладки
+        self.dirty = set()                      # вкладки, карточки которых устарели (шрифт, вид) и перерисуются при входе
+        self.win_start = 0                      # индекс первой показанной карточки (окно ≤ WINDOW карточек)
+        self.pending_append = None              # {'drop': n, 'new': m} — «Показать ещё»: интерфейс дорисовывает, а не перестраивает
+        self.reading = None                     # режим чтения: {'book','last','has_next','total'}
         self.on_ask_continue = None             # (название книги, номер блока, продолжить(), с_начала())
+        self._indexing_names = set()
 
         # колбэки интерфейса
         self.on_cards = _noop       # (cards: list[dict], total: int, has_more: bool)
@@ -113,11 +119,22 @@ class Controller:
 
     def _auto_index(self) -> None:
         """Автоматическая переиндексация (настройка «Настройки»): новые и изменённые книги индексируются сами."""
-        if not self.config.get_bool('auto_index', False) or getattr(self, '_indexing', False):
+        if not self.auto_index_on():
             return
         names = [b.file_name for b in self.library.books if b.state != 'ready']
         if names:
             self.index_books(names)
+
+    def auto_index_on(self) -> bool:
+        return self.config.get_bool('auto_index', True)
+
+    def maybe_index(self, file_names: List[str]) -> bool:
+        """Индексация после изменения книги: только в автоматическом режиме. В ручном — подсказка, без индексации."""
+        if self.auto_index_on():
+            self.index_books(file_names)
+            return True
+        self.on_status("Книга изменена. Режим индексации ручной — нажмите «Индексировать» на вкладке «Книги»")
+        return False
 
     def publish_books(self):
         self.on_books(self.book_rows())
@@ -132,11 +149,11 @@ class Controller:
 
     # ================= индексация =================
     def index_books(self, file_names: List[str]) -> None:
-        books = [self.library.find(n) for n in file_names]
+        books = [self.library.find(n) for n in file_names if n not in self._indexing_names]
         books = [b for b in books if b]
         if not books:
             return
-        self._indexing = True
+        self._indexing_names |= {b.file_name for b in books}       # одну книгу не индексируем дважды одновременно
 
         def work():
             for book in books:
@@ -147,7 +164,7 @@ class Controller:
                 except Exception as e:
                     self.ui_post(lambda b=book, e=e: self.on_status(f"Ошибка индексации {b.display}: {e}"))
             def done():
-                self._indexing = False
+                self._indexing_names -= {b.file_name for b in books}
                 self.selected |= {b.file_name for b in books if b.ready}
                 self._save_selected()
                 self.publish_books()
@@ -192,9 +209,6 @@ class Controller:
         """Кнопка «Поиск»: единственный способ запустить поиск."""
         if text is not None:
             self.query = text
-        if self.query.strip() == '**':
-            self._start_reading()
-            return
         need = self.config.get_int('min_query_len', 3)
         if len(self.query.strip()) < need:
             self.on_status(f"Введите не менее {need} знаков")
@@ -222,7 +236,7 @@ class Controller:
             return
         self.outcome = outcome
         self.shown = self.config.get_int('page_size', 3)
-        self.cap = self.config.get_int('best_step', 20)
+        self.win_start = 0
         self.expanded.clear()
         self.offsets.clear()
         self._publish()
@@ -231,34 +245,43 @@ class Controller:
             self.on_status('; '.join(outcome.errors))
         else:
             mode = '/'.join(sorted(outcome.modes)) or '—'
-            self.on_status(f"Найдено топиков: {visible}, лучшие {min(visible, self.cap)} · поиск {outcome.elapsed_ms:.0f} мс "
+            self.on_status(f"Найдено топиков: {visible} · поиск {outcome.elapsed_ms:.0f} мс "
                            f"(индекс {outcome.index_ms:.0f} мс, {mode})"
                            + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
 
     # ================= результаты =================
+    WINDOW = 20             # сколько карточек одновременно держим на экране и в памяти
+
+    def _items(self):
+        return self.outcome.results if self.reading else self.search.visible(self.outcome)
+
     def _publish(self) -> None:
-        visible = self.search.visible(self.outcome)
+        self.dirty.discard(self.tab)
+        self.dirty.add('read' if self.tab == 'search' else 'search')     # карточки другой вкладки теперь устарели
+        items = self._items()
         brief = self.config.get_bool('brief_view', False) and not self.reading
-        limit = min(len(visible), self.cap)                 # «лучшие N»: остальные — по кнопке
-        count = min(self.shown, limit)
-        self.search.fill(visible[:count])                  # текст подгружается только для показанных
+        start = 0 if self.reading else self.win_start
+        count = len(items) if self.reading else max(0, min(self.shown, len(items) - start))
+        seg = items[start:start + count]
+        self.search.fill(seg)                              # текст подгружается только для показанных
         cards = []
-        for i, item in enumerate(visible[:count]):
+        for i, item in enumerate(seg):
             key = f"{item['book']}:{item['rowid']}"
             expanded = key in self.expanded
-            cards.append(self._card(i, key, item, brief and not expanded, expanded))
-        step = self.config.get_int('best_step', 20)
-        if self.reading:
-            self.more_label = f"Следующие {self.config.get_int('page_size', 3)} блока ▶" if self.reading['has_next'] else ''
-        elif count < limit:
-            self.more_label = f"Показать ещё {min(self.config.get_int('page_size', 3), limit - count)}"
-        elif len(visible) > limit:
-            self.more_label = f"Ещё {min(step, len(visible) - limit)} лучших (всего {len(visible)})"
-        else:
-            self.more_label = ''
-        self.on_cards(cards, len(visible), bool(self.more_label))
+            cards.append(self._card(start + i, key, item, brief and not expanded, expanded))
+        has_more = self.reading['has_next'] if self.reading else (start + count < len(items))
+        self.more_label = f"Показать ещё {self.config.get_int('page_size', 3)}" if has_more else ''
+        self.on_cards(cards, len(items), has_more)
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
+
+    def _release(self, items) -> None:
+        """Выгрузка из памяти карточек, ушедших за пределы окна."""
+        for it in items:
+            key = f"{it['book']}:{it['rowid']}"
+            self.expanded.discard(key)
+            self.offsets.pop(key, None)
+            it['content'] = None
 
     MAX_CHARS = 1800          # длиннее — показываем окном: огромная текстура на телефоне даёт чёрные прямоугольники и тормоза
 
@@ -269,50 +292,22 @@ class Controller:
         if brief:
             text, hl, segments = build_brief_view_mapped(content, exact, frags)
             return text, hl, segments, None
-        hl = get_intervals(content, exact, frags)
-        n = len(content)
-        if n <= self.MAX_CHARS:
-            return content, hl, [(0, 0, n)], None
-        start = self.offsets.get(key)
-        if start is None:                                   # сначала — окно вокруг первого совпадения
-            start = max(0, (hl[0][0] if hl else 0) - 300)
-            start = self._snap(content, start)
-            self.offsets[key] = start
-        end = min(n, start + self.MAX_CHARS)
-        if end < n:
-            cut = max(content.rfind('\n', start, end), content.rfind(' ', start, end))
-            if cut > start + self.MAX_CHARS // 2:
-                end = cut
-        prefix = '… ' if start > 0 else ''
-        suffix = ' …' if end < n else ''
-        shift = len(prefix) - start
-        shown = [(max(s_, start) + shift, min(e_, end) + shift, p_) for s_, e_, p_ in hl if e_ > start and s_ < end]
-        text = prefix + content[start:end] + suffix
-        paging = {'prev': start > 0, 'next': end < n, 'info': f"{start + 1}–{end} из {n} зн."}
-        return text, shown, [(len(prefix), start, end - start)], paging
+        return content, get_intervals(content, exact, frags), [(0, 0, len(content))], None
 
-    @staticmethod
-    def _snap(content: str, pos: int) -> int:
-        """Сдвигает начало окна назад к границе строки или слова, чтобы не рвать слово."""
-        if pos <= 0:
-            return 0
-        cut = max(content.rfind('\n', max(0, pos - 200), pos), content.rfind(' ', max(0, pos - 200), pos))
-        return cut + 1 if cut >= 0 else pos
-
-    def shift_card(self, key: str, direction: int) -> None:
-        """Длинный топик читается окнами: «Дальше» / «Назад»."""
-        item = self._find_item(key)
-        if item is None:
-            return
-        _t, _h, segs, paging = self._view(key, item, False)
-        if not paging:
-            return
-        _d0, c0, length = segs[0]
-        if direction > 0:
-            self.offsets[key] = self._snap(item['content'], c0 + length - 200)
-        else:
-            self.offsets[key] = self._snap(item['content'], max(0, c0 - self.MAX_CHARS + 200))
-        self._publish()
+    @classmethod
+    def chunks(cls, text: str):
+        """Длинный текст рисуется несколькими подряд идущими виджетами (одна огромная текстура на телефоне даёт
+           чёрные прямоугольники): границы — по концу строки или слова. [(начало, конец)]."""
+        out, n, pos = [], len(text), 0
+        while pos < n:
+            end = min(n, pos + cls.MAX_CHARS)
+            if end < n:
+                cut = max(text.rfind('\n', pos, end), text.rfind(' ', pos, end))
+                if cut > pos + cls.MAX_CHARS // 2:
+                    end = cut + 1
+            out.append((pos, end))
+            pos = end
+        return out or [(0, 0)]
 
     def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
         content = item['content']
@@ -325,7 +320,7 @@ class Controller:
             else self.search.header_markup(item, i + 1)
         return {'key': key, 'book': item['book'], 'header': header,
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': sorted(spans), 'segments': segments,
-                'expanded': expanded, 'paging': paging, 'source': self._source_label(item['book'])}
+                'expanded': expanded, 'chunks': self.chunks(text), 'source': self._source_label(item['book'])}
 
     def _source_label(self, file_name: str) -> str:
         book = self.library.find(file_name)
@@ -518,8 +513,8 @@ class Controller:
             return False
         self.library.scan()
         self.publish_books()
-        self.on_status("Записано в дневник. Переиндексация…")
-        self.index_books([os.path.basename(path)])
+        self.on_status("Записано в дневник.")
+        self.maybe_index([os.path.basename(path)])
         return True
 
     def diary_file(self) -> Optional[str]:
@@ -568,24 +563,52 @@ class Controller:
         self.config.save()
         self.library.scan()
         self.publish_books()
-        self.on_status(f"Добавлено в «{book.display}». Переиндексация…")
-        self.index_books([file_name])
+        self.on_status(f"Добавлено в «{book.display}».")
+        self.maybe_index([file_name])
         return True
 
-    # ================= режим чтения («**» при одной выбранной книге) =================
+    # ================= вкладка «Чтение»: блоки выбранной книги подряд =================
     def _read_key(self, file_name: str) -> str:
         return 'read_pos:' + file_name.replace('=', '_')
+
+    def set_tab(self, tab: str) -> None:
+        """Переключение вкладок с карточками («Поиск» / «Чтение»): состояние каждой сохраняется."""
+        if tab not in ('search', 'read'):
+            return
+        if tab != self.tab:
+            self._states[self.tab] = dict(outcome=self.outcome, shown=self.shown, win_start=self.win_start,
+                                          offsets=self.offsets, expanded=self.expanded, reading=self.reading)
+            st = self._states.get(tab) or {}
+            self.tab = tab
+            self.outcome = st.get('outcome') or SearchOutcome()
+            self.shown = st.get('shown', 0)
+            self.win_start = st.get('win_start', 0)
+            self.offsets = st.get('offsets') or {}
+            self.expanded = st.get('expanded') or set()
+            self.reading = st.get('reading')
+        if tab == 'read':
+            books = self.selected_books()
+            same = self.reading and len(books) == 1 and books[0].file_name == self.reading['book']
+            if not same:
+                self.reading = None
+                self.outcome = SearchOutcome()
+                self.offsets, self.expanded = {}, set()
+                self.dirty.add('read')
+                self.on_cards([], 0, False)
+                self._start_reading()
+                return
+        if tab in self.dirty:
+            self._publish()
 
     def _start_reading(self) -> None:
         books = self.selected_books()
         if len(books) != 1:
-            self.on_status("Режим чтения «**»: выберите на вкладке «Книги» ровно одну книгу")
+            self.on_status("Чтение: выберите на вкладке «Книги» ровно одну книгу")
             return
         book = books[0]
         if not book.ready:
             self.on_status(f"«{book.display}»: книга не проиндексирована")
             return
-        self._token += 1                                  # текущий поиск (если идёт) отбрасывается
         try:
             saved = int(self.config.get(self._read_key(book.file_name), '0') or 0)
         except ValueError:
@@ -596,67 +619,87 @@ class Controller:
             number = idx.ordinal(saved) if saved > first else 0
         finally:
             idx.close()
-        if saved > first and number > 1 and self.on_ask_continue:
+        if number > 1 and self.on_ask_continue:
             self.on_ask_continue(book.display, number,
                                  lambda: self._read_from(book, saved), lambda: self._read_from(book, first))
-        elif saved > first and number > 1:
+        elif number > 1:
             self._read_from(book, saved)
         else:
             self._read_from(book, first)
 
-    def _read_from(self, book, start: int, backward: bool = False) -> None:
-        """Показывает page_size блоков подряд, начиная с rowid start (или оканчивая перед ним)."""
-        step = self.config.get_int('page_size', 3)
+    def _read_rows(self, book, start: int, step: int):
         idx = BookIndex(book.index_path)
         try:
-            rows = idx.read_range(start, step, backward)
+            rows = idx.read_range(start, step)
             if not rows:
-                self.on_status("Дальше блоков нет" if not backward else "Это начало книги")
-                return
-            total = idx.topic_count()
-            base = idx.ordinal(rows[0][0])
-            has_prev = idx.ordinal(rows[0][0]) > 1
-            has_next = idx.has_rowid_after(rows[-1][0])
+                return [], 0, False, 0
+            return rows, idx.topic_count(), idx.has_rowid_after(rows[-1][0]), idx.ordinal(rows[0][0])
         finally:
             idx.close()
-        results = [{'book': book.file_name, 'book_display': book.display, 'rowid': rid, 'content': content,
-                    'position': pos, 'ordinal': base + i,
-                    'meta': {'max_level': 0, 'count_at_max': 0, 'matched_words': []}}
-                   for i, (rid, content, pos) in enumerate(rows)]
-        outcome = SearchOutcome(query='**')
-        outcome.results = results
+
+    @staticmethod
+    def _read_items(book, rows, base):
+        return [{'book': book.file_name, 'book_display': book.display, 'rowid': rid, 'content': content,
+                 'position': pos, 'ordinal': base + i,
+                 'meta': {'max_level': 0, 'count_at_max': 0, 'matched_words': []}}
+                for i, (rid, content, pos) in enumerate(rows)]
+
+    def _read_from(self, book, start: int) -> None:
+        """Начинает чтение с блока rowid=start: показывает page_size блоков подряд."""
+        rows, total, has_next, base = self._read_rows(book, start, self.config.get_int('page_size', 3))
+        if not rows:
+            self.on_status("В книге нет блоков")
+            return
+        outcome = SearchOutcome(query='')
+        outcome.results = self._read_items(book, rows, base)
         self.outcome = outcome
-        self.reading = {'book': book.file_name, 'first': rows[0][0], 'last': rows[-1][0], 'has_prev': has_prev,
-                        'has_next': has_next, 'total': total, 'fresh': True}
-        self.shown = self.cap = len(results)
+        self.reading = {'book': book.file_name, 'last': rows[-1][0], 'has_next': has_next, 'total': total,
+                        'fresh': True}
         self.expanded.clear()
         self.offsets.clear()
-        self.set_setting(self._read_key(book.file_name), rows[0][0])       # место чтения запоминается
+        self.set_setting(self._read_key(book.file_name), rows[-1][0])       # запоминается последнее прочитанное место
         self._publish()
-        self.on_status(f"Чтение: «{book.display}» · блоки {base}–{base + len(rows) - 1} из {total}")
-
-    def _reading_book(self):
-        return self.library.find(self.reading['book']) if self.reading else None
+        self.on_status(f"Чтение: «{book.display}» · блоки с {base} из {total}")
 
     def read_next(self) -> None:
-        book = self._reading_book()
-        if book and self.reading['has_next']:
-            self._read_from(book, self.reading['last'] + 1)
-
-    def read_prev(self) -> None:
-        book = self._reading_book()
-        if book and self.reading['has_prev']:
-            self._read_from(book, self.reading['first'], backward=True)
+        r = self.reading
+        book = self.library.find(r['book']) if r else None
+        if not book or not r['has_next']:
+            return
+        step = self.config.get_int('page_size', 3)
+        rows, total, has_next, base = self._read_rows(book, r['last'] + 1, step)
+        if not rows:
+            r['has_next'] = False
+            self._publish()
+            return
+        results = self.outcome.results
+        results.extend(self._read_items(book, rows, base))
+        drop = max(0, len(results) - self.WINDOW)
+        if drop:
+            self._release(results[:drop])
+            del results[:drop]
+        r['last'], r['has_next'] = rows[-1][0], has_next
+        self.set_setting(self._read_key(book.file_name), rows[-1][0])
+        self.pending_append = {'drop': drop, 'new': len(rows)}
+        self._publish()
+        self.on_status(f"Чтение: «{book.display}» · блок {results[-1]['ordinal']} из {total}")
 
     def show_more(self) -> None:
+        """«Показать ещё 3»: карточки дорисовываются; сверх WINDOW самые первые выгружаются из памяти."""
         if self.reading:
             self.read_next()
             return
-        """Сначала дорисовываются карточки внутри лучших N, потом лучшие расширяются на best_step."""
-        visible = len(self.search.visible(self.outcome))
-        if self.shown >= min(visible, self.cap):
-            self.cap += self.config.get_int('best_step', 20)
-        self.shown += self.config.get_int('page_size', 3)
+        items = self._items()
+        step = self.config.get_int('page_size', 3)
+        add = min(step, len(items) - (self.win_start + self.shown))
+        if add <= 0:
+            return
+        drop = max(0, self.shown + add - self.WINDOW)
+        if drop:
+            self._release(items[self.win_start:self.win_start + drop])
+            self.win_start += drop
+        self.shown += add - drop
+        self.pending_append = {'drop': drop, 'new': add}
         self._publish()
 
     def toggle_expand(self, key: str) -> None:

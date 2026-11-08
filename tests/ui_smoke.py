@@ -62,7 +62,7 @@ app.search_s.input.text = 'вера'
 app.search_s.search()
 card = app.search_s.box.children[0]
 c.show_more()
-c.submit_query('**'); assert c.reading; c.show_more() if c.reading['has_next'] else None; c.read_prev() if c.reading and c.reading['has_prev'] else None
+app.go_tab('read'); assert c.reading; c.show_more() if c.reading['has_next'] else None; app.go_tab('search'); assert c.reading is None
 app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter(); app.books_s.add()
 app.open_export()
 c.set_setting('auto_index', 1); c.rescan(); c.set_setting('auto_index', 0)
