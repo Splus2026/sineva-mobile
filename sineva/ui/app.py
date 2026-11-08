@@ -1,4 +1,4 @@
-"""Интерфейс «Синева+ Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
+"""Интерфейс «Синева Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
 import os
 import time
 
@@ -26,6 +26,7 @@ from ..controller import Controller
 from ..search import escape_markup
 from .picker import add_home_shortcut, pick_files, publish_shared, share_file
 from . import textmodel
+from .splash import Splash
 from .textmodel import atom_at, build_markup
 
 THEMES = {
@@ -597,6 +598,19 @@ class ShareIcon(Widget):
                 Ellipse(pos=(x - r, y - r), size=(2 * r, 2 * r))
 
 
+def divider():
+    """Тонкая линия-разделитель между развёрнутыми «Настройками» и остальными пунктами."""
+    w = Widget(size_hint_y=None, height=dp(12))
+
+    def draw(*a):
+        w.canvas.clear()
+        with w.canvas:
+            Color(*GRAY)
+            Rectangle(pos=(w.x, w.center_y - dp(1)), size=(w.width, dp(2)))
+    w.bind(pos=draw, size=draw)
+    return w
+
+
 def segmented(options, current, on_pick):
     """Ряд кнопок-переключателей (выбранная подсвечена): options = [(название, значение)]."""
     row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
@@ -657,9 +671,10 @@ class SettingsScreen(Screen):
         self.set_box.add_widget(mlabel('Индексация'))
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
-            lambda v: (self.ctl.set_setting('auto_index', v), self.ctl.rescan() if v else None)))
+            lambda v: (self.ctl.set_setting('index_auto', v), self.ctl.rescan() if v else None)))
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(6) * 4
+        self.set_box.add_widget(divider())
+        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(12) + dp(6) * 5
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
@@ -669,15 +684,31 @@ class SettingsScreen(Screen):
         add_home_shortcut(self.ctl.on_status)
 
     def on_pre_enter(self, *a):
-        self.info.text = (f"Синева+ Mobile {__version__}\nПапка книг:\n{escape_markup(self.ctl.paths.books_dir)}\n"
+        self.info.text = (f"Синева Mobile {__version__}\nПапка книг:\n{escape_markup(self.ctl.paths.books_dir)}\n"
                           f"Конфигурация:\n{escape_markup(self.ctl.paths.config_path)}")
 
 
 # ===================================================================
 class SinevaApp(App):
-    title = 'Синева+'
+    title = 'Синева Mobile'
 
     def build(self):
+        """Сначала показывается заставка (слово собирается из пикселей), интерфейс создаётся за ней."""
+        self.ready_root = None
+        self.splash = Splash(on_done=self._swap)
+        Clock.schedule_once(self._init_app, 0.3)
+        return self.splash
+
+    def _swap(self):
+        """Заставка закончилась и интерфейс готов — показываем приложение."""
+        if getattr(self, 'ready_root', None) is None or not self.splash.finished or self.root is not self.splash:
+            return
+        Window.remove_widget(self.splash)
+        Window.add_widget(self.ready_root)
+        self.root = self.ready_root
+        Window.clearcolor = BG
+
+    def _init_app(self, dt):
         self.ctl = Controller(ui_post=ui_post, schedule=schedule)
         apply_theme(self.ctl.config.get('theme', 'day'))
         root = self._make_root()
@@ -689,7 +720,8 @@ class SinevaApp(App):
         self.ctl.publish_books()
         if not self.ctl.library.books:
             self.sm.current = 'books'
-        return root
+        self.ready_root = root
+        self._swap()
 
     def set_theme(self, name):
         """Обычная/ночная тема: цвета меняются, интерфейс пересоздаётся (вкладка и запрос сохраняются)."""
@@ -751,6 +783,8 @@ class SinevaApp(App):
             self.ctl.set_tab(name)
 
     def on_resume(self):
+        if getattr(self, 'ctl', None) is None or self.ready_root is None:
+            return True
         self.ctl.rescan()
         return True
 
@@ -917,7 +951,7 @@ class SinevaApp(App):
         show_tail()
 
     def _on_key(self, window, key, *a):
-        if key == 27 and self.sm.current != 'search':       # «Назад» возвращает на поиск
+        if key == 27 and getattr(self, 'ready_root', None) is not None and self.sm.current != 'search':       # «Назад» возвращает на поиск
             self.go_tab('search')
             return True
         return False

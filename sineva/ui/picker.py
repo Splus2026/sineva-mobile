@@ -186,7 +186,7 @@ def publish_shared(path):
     try:
         label = ctx.getApplicationInfo().loadLabel(ctx.getPackageManager()).toString()
     except Exception:
-        label = 'Синева+'
+        label = 'Синева Mobile'
     shown = f"Documents/{label}/{os.path.basename(path)}"
     _SHARED[path] = (uri, shown)
     return _SHARED[path]
@@ -251,7 +251,7 @@ def add_home_shortcut(status=lambda text: None):
         intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName())
         intent.setAction('android.intent.action.MAIN')
         info = (ShortcutInfoBuilder(context, 'sineva_main')
-                .setShortLabel('Синева+')
+                .setShortLabel('Синева Mobile')
                 .setIcon(Icon.createWithResource(context, context.getApplicationInfo().icon))
                 .setIntent(intent)
                 .build())

@@ -5,8 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 class W:
     def __init__(self, *a, **kw):
-        self.__dict__.update(kw); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1
-        self.canvas = types.SimpleNamespace(before=_Ctx())
+        self.__dict__.update(kw); self.__dict__.setdefault('size', (100, 100)); self.__dict__.setdefault('pos', (0, 0)); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1
+        self.canvas = _Ctx(); self.canvas.before = _Ctx()
     def bind(self, **kw): pass
     def collide_point(self, x, y): return True
     def texture_update(self): pass
@@ -28,6 +28,10 @@ class Clock:
     @staticmethod
     def schedule_once(fn, d=0):
         fn(0); return types.SimpleNamespace(cancel=lambda: None)
+    @staticmethod
+    def schedule_interval(fn, d=0):
+        return types.SimpleNamespace(cancel=lambda: None)
+class _Clock2: pass
 class App(W):
     def run(self): pass
 mod('kivy'); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
@@ -40,6 +44,9 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
 mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W); mod('kivy.uix.image', Image=W)
 mod('kivy.uix.filechooser', FileChooserListView=W)
 mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W)
+class _CV(_Ctx):
+    pass
+
 clip = {}
 mod('kivy.core.clipboard', Clipboard=types.SimpleNamespace(copy=lambda t: clip.update(t=t), paste=lambda: 'вставка'))
 
@@ -55,6 +62,8 @@ open(os.path.join(tmp, 'books', 'a.txt'), 'w', encoding='utf-8').write("1 Вер
 from sineva.ui.app import SinevaApp
 app = SinevaApp()
 app.build()
+for _ in range(120): app.splash._tick(0.05)
+assert app.splash.finished
 c = app.ctl
 c.run_async = False
 c.index_books(['a.txt'])
@@ -65,7 +74,7 @@ c.show_more()
 app.go_tab('read'); assert c.reading; c.show_more() if c.reading['has_next'] else None; app.go_tab('search'); assert c.reading is None
 app.books_s.edit(c.book_rows()[0]); app.settings_s.on_pre_enter(); app.books_s.add()
 app.open_export()
-c.set_setting('auto_index', 1); c.rescan(); c.set_setting('auto_index', 0)
+c.set_setting('index_auto', 1); c.rescan(); c.set_setting('index_auto', 0)
 app.settings_s.toggle_settings(); app.settings_s.toggle_settings()
 app.root = object(); app.set_theme('night'); assert c.config.get('theme') == 'night'
 from sineva.ui import textmodel as _tm; assert _tm.HL_TEXT == '000000'

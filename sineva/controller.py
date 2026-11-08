@@ -126,7 +126,7 @@ class Controller:
             self.index_books(names)
 
     def auto_index_on(self) -> bool:
-        return self.config.get_bool('auto_index', True)
+        return self.config.get_bool('index_auto', False)
 
     def maybe_index(self, file_names: List[str]) -> bool:
         """Индексация после изменения книги: только в автоматическом режиме. В ручном — подсказка, без индексации."""

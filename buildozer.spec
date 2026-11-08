@@ -1,11 +1,14 @@
 [app]
-title = Синева+
+title = Синева Mobile
 package.name = sineva
 package.domain = org.sineva
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ini
 source.exclude_dirs = tests,bin,.buildozer,.github
 version = 1.0
+icon.filename = %(source.dir)s/icon.png
+presplash.filename = %(source.dir)s/presplash.png
+android.presplash_color = #141A2E
 # sqlite3 нужен для индексов; в p4a он собирается со своим SQLite (FTS5/trigram может отсутствовать —
 # тогда приложение само переходит на медленный, но рабочий перебор).
 requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,sqlite3,android,pyjnius,androidstorage4kivy

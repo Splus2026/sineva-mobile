@@ -183,8 +183,25 @@ try:
     out_e = SearchService(cfg).search('вера', [Library(AppPaths(root=os.path.join(tmp, 'e2')), AppConfig(os.path.join(tmp, 'e2.ini'))).find('x') or lib.books[0]])
     check('поиск не падает', out_e is not None)
 
+    # ---------- заставка: слово собирается из пикселей ----------
+    from sineva.ui.smoke import SmokeText, layout
+    st = SmokeText()
+    cells, cols = layout('Синева Mobile')
+    check('заставка: слово из пикселей', len(cells) > 100 and cols > 60 and len(st) == len(cells) * 4)
+    x0, y0, sc0, a0 = st.state(0, 0.0)
+    xe, ye, sce, ae = st.state(0, st.assembled_at)
+    check('заставка: в начале частицы невидимы и разбросаны', a0 == 0 and abs(y0 - st.p[0][1]) > 3)
+    check('заставка: в конце слово собрано точно', all(abs(st.state(i, st.assembled_at)[0] - st.p[i][0]) < 1e-9 and
+          abs(st.state(i, st.assembled_at)[1] - st.p[i][1]) < 1e-9 and st.state(i, st.assembled_at)[3] == 1.0 for i in range(len(st))))
+
+    # ---------- индексация: по умолчанию ручная ----------
+    import sineva.config as _cfg
+    check('после установки индексация ручная', _cfg.DEFAULTS['index_auto'] == '0' and AppConfig(os.path.join(tmp, 'новый.ini')).get_bool('index_auto', False) is False)
+    _cfg.DEFAULTS['index_auto'] = '1'          # дальше тесты проверяют автоматический режим
+
     # ---------- контроллер ----------
     ctl = Controller(paths, run_async=False)
+    ctl.set_setting('index_auto', 1)          # дальше — проверка автоматического режима
     got = {'cards': None, 'words': None, 'status': '', 'books': None}
     ctl.on_cards = lambda cards, total, more: got.update(cards=cards, total=total, more=more)
     ctl.on_words = lambda rows: got.update(words=rows)
@@ -412,7 +429,7 @@ try:
     for _ in range(5):
         rc3.show_more()
     check('окно поиска ограничено', rc3.shown <= 6 and rc3.win_start >= 0, f"{rc3.shown} {rc3.win_start} {n_vis}")
-    check('ручная индексация: maybe_index не индексирует', (rc3.config.set('auto_index', 0), rc3.maybe_index(['bibl.txt']))[1] is False)
+    check('ручная индексация: maybe_index не индексирует', (rc3.config.set('index_auto', 0), rc3.maybe_index(['bibl.txt']))[1] is False)
     check('длинный текст режется на куски', all(b - a <= rc3.MAX_CHARS for a, b in Controller.chunks('слово ' * 2000)) and
           Controller.chunks('слово ' * 2000)[-1][1] == len('слово ' * 2000))
 
