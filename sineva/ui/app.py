@@ -289,6 +289,13 @@ class SelectableText(Label):
         self._apply()
         self.on_select(self.card['key'], sel[0], sel[1], self)
 
+    def refresh(self):
+        """Принудительная перерисовка (после отмены выделения кнопкой)."""
+        self.sel = None
+        self._anchor = None
+        self.select_mode = False
+        self._apply()
+
     def clear_selection(self):
         self.sel = None
         self._anchor = None
@@ -924,7 +931,7 @@ class SinevaApp(App):
                 for w in scr._widgets.get(key, []):
                     off = w.card.get('offset', 0)
                     w.card['marks'] = clip_spans(self.ctl.card_marks(key), off, off + len(w.card['text']))
-                    w.clear_selection()
+                    w.refresh()
 
     def go_tab(self, name):
         self.sm.current = name                              # экран открывается сразу,
