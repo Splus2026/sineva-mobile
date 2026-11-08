@@ -338,8 +338,13 @@ class SearchScreen(Screen):
         t0 = time.time()
         self._suffix = ''
 
+        reading = self.ctl.reading
+        fresh = bool(reading and reading.pop('fresh', False))
+
         def rebuild():
             self.box.clear_widgets()
+            if reading and reading['has_prev']:
+                self.box.add_widget(btn('◀ Предыдущие блоки', self.ctl.read_prev))
             for c in cards:
                 self.box.add_widget(self._card(c))
             if more:
@@ -347,6 +352,8 @@ class SearchScreen(Screen):
             elif not cards and self.ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
         keep_scroll(self.sv, rebuild)
+        if fresh:
+            self.sv.scroll_y = 1                                 # новая страница чтения — с начала
         built = (time.time() - t0) * 1000
 
         def done(dt):                                      # после первого кадра: виджеты созданы, текстуры нарисованы
@@ -381,7 +388,7 @@ class SearchScreen(Screen):
             pg.add_widget(mlabel(c['paging']['info'], font_size=sp(12)))
             pg.add_widget(nxt)
             box.add_widget(pg)
-        if self.ctl.config.get_bool('brief_view', False):         # «Полностью» нужна только в кратком виде
+        if self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading:         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
                           background_normal='', background_color=BTN2, color=BTN2_TXT)
             more.bind(on_release=lambda *_: self.ctl.toggle_expand(key))
@@ -673,6 +680,7 @@ class SinevaApp(App):
         c.on_status = lambda t: (self.search_s.set_status(t), self.books_s.set_status(t))
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
+        c.on_ask_continue = self.ask_continue
 
         root = BoxLayout(orientation='vertical')
         root.add_widget(self.sm)
@@ -700,6 +708,17 @@ class SinevaApp(App):
             self.ctl.on_status('Подчёркнуто и записано в конспект')
         elif result == 'unmarked':
             self.ctl.on_status('Подчёркивание снято')
+
+    def ask_continue(self, book, number, cont, start):
+        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        box.add_widget(Label(text=f"Продолжить чтение «{book}» с блока {number}?", font_size=sp(16),
+                             halign='center', valign='middle'))
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        pop = top_popup('Режим чтения', box, dp(200))
+        row.add_widget(btn('Продолжить', lambda: (pop.dismiss(), cont())))
+        row.add_widget(btn('С начала', lambda: (pop.dismiss(), start()), color=GRAY))
+        box.add_widget(row)
+        pop.open()
 
     # ---------- размер шрифта ----------
     def change_font(self, delta):

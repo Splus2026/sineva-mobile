@@ -235,6 +235,30 @@ class BookIndex:
                                  'max_level': max_level, 'count_at_max': counts[max_level]}})
         return out
 
+    def read_range(self, start_rowid: int, limit: int, backward: bool = False) -> List[Tuple[int, str, str]]:
+        """Последовательное чтение: топики от start_rowid вперёд (включая его) или, при backward,
+           limit топиков перед ним. Возвращает [(rowid, content, position)] по возрастанию rowid."""
+        if backward:
+            cond, order = "d.rowid < ?", "DESC"
+        else:
+            cond, order = "d.rowid >= ?", "ASC"
+        rows = self.conn.execute(
+            f"SELECT d.rowid, d.content, m.position FROM {DOCS_TABLE} d LEFT JOIN doc_metadata m ON m.rowid = d.rowid "
+            f"WHERE {cond} ORDER BY d.rowid {order} LIMIT ?", (start_rowid, limit)).fetchall()
+        out = [(r[0], r[1], r[2] if r[2] is not None else '0') for r in rows]
+        return out[::-1] if backward else out
+
+    def ordinal(self, rowid: int) -> int:
+        """Порядковый номер топика (1…N) по rowid."""
+        return int(self.conn.execute(f"SELECT count(*) FROM {DOCS_TABLE} WHERE rowid <= ?", (rowid,)).fetchone()[0])
+
+    def first_rowid(self) -> int:
+        r = self.conn.execute(f"SELECT min(rowid) FROM {DOCS_TABLE}").fetchone()
+        return int(r[0]) if r and r[0] is not None else 0
+
+    def has_rowid_after(self, rowid: int) -> bool:
+        return self.conn.execute(f"SELECT 1 FROM {DOCS_TABLE} WHERE rowid > ? LIMIT 1", (rowid,)).fetchone() is not None
+
     def fetch(self, rowids: List[int]) -> Dict[int, Tuple[str, str]]:
         """Текст и позиция выбранных топиков: {rowid: (content, position)}."""
         out: Dict[int, Tuple[str, str]] = {}

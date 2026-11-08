@@ -15,9 +15,10 @@ from .config import AppConfig
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
 from .highlight import build_brief_view_mapped, get_intervals
+from .index import BookIndex
 from .library import Book, Library
 from .paths import AppPaths
-from .search import SearchOutcome, SearchService
+from .search import SearchOutcome, SearchService, escape_markup
 from .vector import VectorRegistry, available_types
 
 
@@ -52,6 +53,8 @@ class Controller:
         self.selected = self._load_selected()
         self._token = 0
         self._timer = None
+        self.reading = None                      # режим последовательного чтения («**»): {'book','first','last','has_prev','has_next','total','base'}
+        self.on_ask_continue = None             # (название книги, номер блока, продолжить(), с_начала())
 
         # колбэки интерфейса
         self.on_cards = _noop       # (cards: list[dict], total: int, has_more: bool)
@@ -189,6 +192,9 @@ class Controller:
         """Кнопка «Поиск»: единственный способ запустить поиск."""
         if text is not None:
             self.query = text
+        if self.query.strip() == '**':
+            self._start_reading()
+            return
         need = self.config.get_int('min_query_len', 3)
         if len(self.query.strip()) < need:
             self.on_status(f"Введите не менее {need} знаков")
@@ -196,6 +202,7 @@ class Controller:
         self._start_search(self.query)
 
     def _start_search(self, text: str) -> None:
+        self.reading = None
         self._token += 1
         token = self._token
         books = self.selected_books()
@@ -231,7 +238,7 @@ class Controller:
     # ================= результаты =================
     def _publish(self) -> None:
         visible = self.search.visible(self.outcome)
-        brief = self.config.get_bool('brief_view', False)
+        brief = self.config.get_bool('brief_view', False) and not self.reading
         limit = min(len(visible), self.cap)                 # «лучшие N»: остальные — по кнопке
         count = min(self.shown, limit)
         self.search.fill(visible[:count])                  # текст подгружается только для показанных
@@ -241,7 +248,9 @@ class Controller:
             expanded = key in self.expanded
             cards.append(self._card(i, key, item, brief and not expanded, expanded))
         step = self.config.get_int('best_step', 20)
-        if count < limit:
+        if self.reading:
+            self.more_label = f"Следующие {self.config.get_int('page_size', 3)} блока ▶" if self.reading['has_next'] else ''
+        elif count < limit:
             self.more_label = f"Показать ещё {min(self.config.get_int('page_size', 3), limit - count)}"
         elif len(visible) > limit:
             self.more_label = f"Ещё {min(step, len(visible) - limit)} лучших (всего {len(visible)})"
@@ -311,7 +320,10 @@ class Controller:
         spans = []
         for _m, cs, ce in marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(item['book']))):
             spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
-        return {'key': key, 'book': item['book'], 'header': self.search.header_markup(item, i + 1),
+        header = (f"[b]Блок {item['ordinal']}[/b] [size=12sp][color=777777]из {self.reading['total']} · "
+                  f"поз. {escape_markup(str(item.get('position', '')))}[/color][/size]") if self.reading and 'ordinal' in item \
+            else self.search.header_markup(item, i + 1)
+        return {'key': key, 'book': item['book'], 'header': header,
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': sorted(spans), 'segments': segments,
                 'expanded': expanded, 'paging': paging, 'source': self._source_label(item['book'])}
 
@@ -327,7 +339,7 @@ class Controller:
         return None
 
     def _segments(self, key: str, item: dict):
-        brief = self.config.get_bool('brief_view', False) and key not in self.expanded
+        brief = self.config.get_bool('brief_view', False) and key not in self.expanded and not self.reading
         return self._view(key, item, brief)[2]
 
     def _content_pieces(self, key: str, ds: int, de: int):
@@ -560,7 +572,86 @@ class Controller:
         self.index_books([file_name])
         return True
 
+    # ================= режим чтения («**» при одной выбранной книге) =================
+    def _read_key(self, file_name: str) -> str:
+        return 'read_pos:' + file_name.replace('=', '_')
+
+    def _start_reading(self) -> None:
+        books = self.selected_books()
+        if len(books) != 1:
+            self.on_status("Режим чтения «**»: выберите на вкладке «Книги» ровно одну книгу")
+            return
+        book = books[0]
+        if not book.ready:
+            self.on_status(f"«{book.display}»: книга не проиндексирована")
+            return
+        self._token += 1                                  # текущий поиск (если идёт) отбрасывается
+        try:
+            saved = int(self.config.get(self._read_key(book.file_name), '0') or 0)
+        except ValueError:
+            saved = 0
+        idx = BookIndex(book.index_path)
+        try:
+            first = idx.first_rowid()
+            number = idx.ordinal(saved) if saved > first else 0
+        finally:
+            idx.close()
+        if saved > first and number > 1 and self.on_ask_continue:
+            self.on_ask_continue(book.display, number,
+                                 lambda: self._read_from(book, saved), lambda: self._read_from(book, first))
+        elif saved > first and number > 1:
+            self._read_from(book, saved)
+        else:
+            self._read_from(book, first)
+
+    def _read_from(self, book, start: int, backward: bool = False) -> None:
+        """Показывает page_size блоков подряд, начиная с rowid start (или оканчивая перед ним)."""
+        step = self.config.get_int('page_size', 3)
+        idx = BookIndex(book.index_path)
+        try:
+            rows = idx.read_range(start, step, backward)
+            if not rows:
+                self.on_status("Дальше блоков нет" if not backward else "Это начало книги")
+                return
+            total = idx.topic_count()
+            base = idx.ordinal(rows[0][0])
+            has_prev = idx.ordinal(rows[0][0]) > 1
+            has_next = idx.has_rowid_after(rows[-1][0])
+        finally:
+            idx.close()
+        results = [{'book': book.file_name, 'book_display': book.display, 'rowid': rid, 'content': content,
+                    'position': pos, 'ordinal': base + i,
+                    'meta': {'max_level': 0, 'count_at_max': 0, 'matched_words': []}}
+                   for i, (rid, content, pos) in enumerate(rows)]
+        outcome = SearchOutcome(query='**')
+        outcome.results = results
+        self.outcome = outcome
+        self.reading = {'book': book.file_name, 'first': rows[0][0], 'last': rows[-1][0], 'has_prev': has_prev,
+                        'has_next': has_next, 'total': total, 'fresh': True}
+        self.shown = self.cap = len(results)
+        self.expanded.clear()
+        self.offsets.clear()
+        self.set_setting(self._read_key(book.file_name), rows[0][0])       # место чтения запоминается
+        self._publish()
+        self.on_status(f"Чтение: «{book.display}» · блоки {base}–{base + len(rows) - 1} из {total}")
+
+    def _reading_book(self):
+        return self.library.find(self.reading['book']) if self.reading else None
+
+    def read_next(self) -> None:
+        book = self._reading_book()
+        if book and self.reading['has_next']:
+            self._read_from(book, self.reading['last'] + 1)
+
+    def read_prev(self) -> None:
+        book = self._reading_book()
+        if book and self.reading['has_prev']:
+            self._read_from(book, self.reading['first'], backward=True)
+
     def show_more(self) -> None:
+        if self.reading:
+            self.read_next()
+            return
         """Сначала дорисовываются карточки внутри лучших N, потом лучшие расширяются на best_step."""
         visible = len(self.search.visible(self.outcome))
         if self.shown >= min(visible, self.cap):

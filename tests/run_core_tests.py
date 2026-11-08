@@ -358,6 +358,42 @@ try:
     ctl2 = Controller(paths, run_async=False)
     check('выбранные книги помнятся', ctl2.selected == ctl.selected)
 
+    # ---------- режим чтения «**» ----------
+    rc = Controller(paths, run_async=False)
+    rg = {'cards': None, 'status': '', 'ask': None}
+    rc.on_cards = lambda cards, total, more: rg.update(cards=cards, total=total, more=more)
+    rc.on_status = lambda t: rg.update(status=t)
+    rc.config.set('page_size', 2)
+    rc.selected = {'bibl.txt', 'Грани.txt'}
+    rc.submit_query('**')
+    check('«**» при двух книгах — подсказка', 'ровно одну' in rg['status'] and rg['cards'] is None, rg['status'])
+    rc.selected = {'bibl.txt'}
+    rc.submit_query('**')
+    check('«**»: читаются блоки подряд', rg['cards'] and len(rg['cards']) == 2 and rc.reading, rg['status'])
+    first_text = rg['cards'][0]['text']
+    check('чтение: заголовок «Блок 1»', 'Блок 1' in rg['cards'][0]['header'])
+    rc.show_more()
+    check('чтение: «дальше» — следующие блоки', 'Блок 3' in rg['cards'][0]['header'] and rg['cards'][0]['text'] != first_text)
+    pos = rc.config.get('read_pos:bibl.txt')
+    rc.read_prev()
+    check('чтение: «назад»', 'Блок 1' in rg['cards'][0]['header'])
+    rc.show_more()
+    rc2 = Controller(paths, run_async=False)
+    rg2 = {}
+    rc2.on_cards = lambda cards, total, more: rg2.update(cards=cards)
+    rc2.on_status = lambda t: None
+    rc2.selected = {'bibl.txt'}
+    asked = {}
+    rc2.on_ask_continue = lambda name, n, cont, start: asked.update(n=n, cont=cont, start=start)
+    rc2.submit_query('**')
+    check('место чтения помнится: предложено продолжить', asked.get('n') == 3, str(asked))
+    asked['start']()
+    check('«С начала» — блок 1', 'Блок 1' in rg2['cards'][0]['header'])
+    rc2.submit_query('**'); asked['cont']()
+    check('«Продолжить» — блок 3', 'Блок 3' in rg2['cards'][0]['header'])
+    rc2.submit_query('довер')
+    check('обычный поиск выключает режим чтения', rc2.reading is None)
+
     # ---------- векторы: архитектура ----------
     vs = ctl2.vector_status()
     check('ещё нет моделей', vs['ready'] is False and vs['types'] == [])
