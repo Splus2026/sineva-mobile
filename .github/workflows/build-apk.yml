@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
+permissions:
+  contents: write          # нужно для создания релиза
 jobs:
   apk:
     runs-on: ubuntu-22.04
@@ -34,3 +36,18 @@ jobs:
         with:
           name: sineva-apk
           path: bin/*.apk
+      - name: Постоянное имя файла
+        run: |
+          cp "$(ls bin/*.apk | head -n 1)" SinevaMobile.apk
+      - name: Релиз с APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          name: Синева Mobile — сборка ${{ github.run_number }}
+          body: |
+            Установочный файл: **SinevaMobile.apk**.
+            Постоянная ссылка на последнюю сборку:
+            https://github.com/${{ github.repository }}/releases/latest/download/SinevaMobile.apk
+          files: SinevaMobile.apk
+          make_latest: true
