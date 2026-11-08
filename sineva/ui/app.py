@@ -136,6 +136,37 @@ def vlist():
     return sv, box
 
 
+class ReadBox(ScrollView):
+    """Только для чтения, с прокруткой по вертикали (если текст не помещается). to_end — показывать конец."""
+    def __init__(self, to_end=False, **kw):
+        super().__init__(bar_width=dp(4), **kw)
+        self.to_end = to_end
+        self.lb = Label(color=(0.2, 0.2, 0.25, 1), size_hint_y=None, halign='left', valign='top', font_size=sp(14))
+        self.lb.bind(width=lambda w, v: setattr(w, 'text_size', (v - dp(8), None)))
+        self.lb.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1] + dp(10)))
+        self.add_widget(self.lb)
+        with self.canvas.before:
+            Color(0.94, 0.95, 0.98, 1)
+            self._bg = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=lambda w, v: setattr(self._bg, 'pos', v), size=lambda w, v: setattr(self._bg, 'size', v))
+
+    @property
+    def text(self):
+        return self.lb.text
+
+    @text.setter
+    def text(self, value):
+        self.lb.text = value
+        Clock.schedule_once(lambda dt: setattr(self, 'scroll_y', 0 if self.to_end else 1), 0.1)
+
+
+def no_bubble(ti):
+    """Без системной панели Copy/Cut/Paste и «капель» выделения поверх окон."""
+    ti.use_bubble = False
+    ti.use_handles = False
+    return ti
+
+
 class SelectableText(Label):
     """Текст топика: жёлтый маркер на найденных словах, подчёркнутое и выделение.
        Касание слова (без сдвига пальца) выделяет это слово, касание второго слова — весь фрагмент между ними;
@@ -265,13 +296,19 @@ class SearchScreen(Screen):
         super().__init__(name='search', **kw)
         self.app, self.ctl = app, app.ctl
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
-        top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
-        self.input = TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
-                               font_size=sp(17), write_tab=False)
+        top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
+        self.input = no_bubble(TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
+                               font_size=sp(22), write_tab=False))
+        def center(w, *a):
+            lh = w.line_height if isinstance(w.line_height, (int, float)) else 30
+            pad = max(0, (w.height - lh) / 2)
+            w.padding = [dp(10), pad, dp(10), pad]
+        self.input.bind(size=center, font_size=center)
+        center(self.input)
         self.input.bind(text=lambda w, v: self.ctl.on_query_changed(v))      # только запоминает запрос
         self.input.bind(on_text_validate=lambda *_: self.search())
-        self.go = Button(text='Поиск', size_hint_x=None, width=dp(88), background_normal='',
-                         background_color=ACCENT, color=(1, 1, 1, 1))
+        self.go = Button(text='Поиск', size_hint_x=None, width=dp(100), background_normal='',
+                         background_color=ACCENT, color=(1, 1, 1, 1), font_size=sp(20))
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
@@ -437,10 +474,11 @@ class BooksScreen(Screen):
     def edit(self, r):
         """Название и разделитель — два поля; «Отмена» просто закрывает окно без изменений."""
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
-        name = TextInput(text=r['display'], hint_text='Название (алиас)', multiline=False,
-                         size_hint_y=None, height=dp(44), font_size=sp(16))
+        name = no_bubble(TextInput(text=r['display'], hint_text='Название (алиас)', multiline=False,
+                         size_hint_y=None, height=dp(44), font_size=sp(16)))
         sep = TextInput(text=r['separator'], hint_text='Разделитель: N1000, NS300, Numeric, ExcelRow1 или строка',
                         multiline=False, size_hint_y=None, height=dp(44), font_size=sp(16))
+        no_bubble(sep)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         pop = top_popup(r['file_name'], box, dp(210))
 
@@ -531,13 +569,8 @@ class SettingsScreen(Screen):
         add_home_shortcut(self.ctl.on_status)
 
     def on_pre_enter(self, *a):
-        v = self.ctl.vector_status()
-        vec = ('Смысловой поиск: модели подключены — ' + ', '.join(v['models'])) if v['ready'] else \
-              'Смысловой поиск (векторные модели): пока не подключён, архитектура готова.'
-        if v['problems']:
-            vec += '\n' + '\n'.join(escape_markup(p) for p in v['problems'])
         self.info.text = (f"Синева+ Mobile {__version__}\nПапка книг:\n{escape_markup(self.ctl.paths.books_dir)}\n"
-                          f"Конфигурация:\n{escape_markup(self.ctl.paths.config_path)}\n\n{vec}")
+                          f"Конфигурация:\n{escape_markup(self.ctl.paths.config_path)}")
 
 
 # ===================================================================
@@ -593,7 +626,7 @@ class SinevaApp(App):
         root.add_widget(self.sm)
         nav = BoxLayout(size_hint_y=None, height=dp(52))
         for label, name in (('Поиск', 'search'), ('Книги', 'books'), ('Ещё', 'settings')):
-            b = Button(text=label, background_normal='', background_color=NAV, color=NAV_TXT)
+            b = Button(text=label, background_normal='', background_color=NAV, color=NAV_TXT, font_size=sp(19))
             b.bind(on_release=lambda *_a, n=name: setattr(self.sm, 'current', n))
             nav.add_widget(b)
         root.add_widget(nav)
@@ -635,10 +668,10 @@ class SinevaApp(App):
         first = next((k for k, v in names.items() if v == remembered), next(iter(names)))
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
         spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14))
-        last = TextInput(text='', readonly=True, size_hint_y=0.4, font_size=sp(13),
-                         background_color=(0.94, 0.95, 0.98, 1), foreground_color=(0.25, 0.25, 0.3, 1))
+        last = ReadBox(to_end=False, size_hint_y=0.4)
         text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
                          size_hint_y=0.6, font_size=sp(16))
+        no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         pop = tall_popup('Дополнение книги', box)
 
@@ -646,7 +679,6 @@ class SinevaApp(App):
             last.text = 'Загрузка…'
             def work(dt):
                 last.text = ctl.last_block(names[spin.text]) or '(книга пуста)'
-                last.cursor = (0, 0)
             Clock.schedule_once(work, 0.05)
         spin.bind(text=show_last)
 
@@ -729,16 +761,15 @@ class SinevaApp(App):
     def open_diary(self):
         """Две части: сверху конец дневника (последние записи), снизу поле новой записи."""
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
-        last = TextInput(text='', readonly=True, size_hint_y=0.4, font_size=sp(13),
-                         background_color=(0.94, 0.95, 0.98, 1), foreground_color=(0.25, 0.25, 0.3, 1))
+        last = ReadBox(to_end=True, size_hint_y=0.4)
         text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True,
                          size_hint_y=0.6, font_size=sp(16))
+        no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         pop = tall_popup('Дневник', box)
 
         def show_tail(dt=None):
             last.text = self.ctl.diary_tail() or '(дневник пока пуст)'
-            Clock.schedule_once(lambda d: setattr(last, 'cursor', last.get_cursor_from_index(len(last.text))), 0.05)
 
         def paste():
             text.text = text.text + (Clipboard.paste() or '')
