@@ -496,7 +496,63 @@ class BooksScreen(Screen):
         self.ctl.rescan()                    # вручную скопированные файлы видны сразу
 
     def index_needed(self):
-        self.ctl.index_books([r['file_name'] for r in self._rows if r['state'] != 'ready'])
+        """Одна книга с устаревшим индексом — индексируем сразу; несколько — список с выбором."""
+        need = [r for r in self._rows if r['state'] != 'ready']
+        if not need:
+            self.ctl.on_status('Все индексы актуальны')
+        elif len(need) == 1:
+            self.ctl.index_books([need[0]['file_name']])
+        else:
+            self.choose_to_index(need)
+
+    def choose_to_index(self, need):
+        box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        box.add_widget(mlabel('Книги с устаревшим или отсутствующим индексом:', color=(1, 1, 1, 1)))
+        sv, lst = vlist()
+        chosen = {r['file_name'] for r in need}
+        boxes = {}
+        lock = {'on': False}
+        allcb = CheckBox(active=True, size_hint_x=None, width=dp(44))
+
+        def row(cb, text):
+            r_ = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+            r_.add_widget(cb)
+            r_.add_widget(mlabel(text, color=(1, 1, 1, 1)))
+            lst.add_widget(r_)
+
+        def on_all(w, v):
+            if lock['on']:
+                return
+            lock['on'] = True
+            for fn, cb in boxes.items():
+                cb.active = v
+            chosen.clear()
+            if v:
+                chosen.update(boxes)
+            lock['on'] = False
+
+        def on_one(fn, v):
+            if lock['on']:
+                return
+            (chosen.add if v else chosen.discard)(fn)
+            lock['on'] = True
+            allcb.active = len(chosen) == len(boxes)
+            lock['on'] = False
+        row(allcb, 'Выбрать все')
+        allcb.bind(active=on_all)
+        for r in need:
+            cb = CheckBox(active=True, size_hint_x=None, width=dp(44))
+            cb.bind(active=lambda w, v, fn=r['file_name']: on_one(fn, v))
+            boxes[r['file_name']] = cb
+            row(cb, f"{escape_markup(r['display'])} · {r['size_kb']} КБ")
+        box.add_widget(sv)
+        pop = tall_popup('Индексация', box)
+        bar = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        bar.add_widget(btn('Индексировать', lambda: (pop.dismiss(), self.ctl.index_books(
+            [r['file_name'] for r in need if r['file_name'] in chosen]))))
+        bar.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        box.add_widget(bar)
+        pop.open()
 
     def set_status(self, text):
         self.status.text = escape_markup(text)
@@ -511,6 +567,11 @@ class BooksScreen(Screen):
 
         def rebuild():
             self.box.clear_widgets()
+            ready = [r for r in rows if r['state'] != 'not_indexed']
+            if len(rows) > 1:                                  # «Выбрать все» / «Снять выбор»
+                every = bool(ready) and all(r['selected'] for r in ready)
+                self.box.add_widget(btn('Снять выбор' if every else 'Выбрать все',
+                                        lambda: self.ctl.select_all(not every), color=GRAY))
             if not rows:
                 self.box.add_widget(mlabel(
                     'Книг пока нет. Нажмите «Добавить» или положите .txt/.docx в папку книг приложения:\n'
@@ -862,12 +923,15 @@ class SinevaApp(App):
 
     def open_about(self):
         box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        sizes = self.ctl.folder_sizes()
+        mb = lambda n: f"{n / 1048576:.1f}".replace('.', ',') + ' МБ'
         box.add_widget(Label(
-            text=(f"Синева Mobile {__version__}\n\nПапка книг:\n{self.ctl.paths.books_dir}\n\n"
+            text=(f"Синева Mobile {__version__}\n\nПапка книг: {mb(sizes['books'])}\n{self.ctl.paths.books_dir}\n\n"
+                  f"Папка индексов: {mb(sizes['index'])}\n{self.ctl.paths.index_dir}\n\n"
                   f"Конфигурация:\n{self.ctl.paths.config_path}"),
             font_size=sp(14), halign='left', valign='top', color=(1, 1, 1, 1),
             text_size=(Window.width - dp(60), None)))
-        pop = top_popup('О программе', box, dp(380))
+        pop = top_popup('О программе', box, dp(470))
         box.add_widget(btn('Закрыть', pop.dismiss, color=GRAY))
         pop.open()
 

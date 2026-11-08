@@ -100,6 +100,19 @@ class Controller:
         self._save_selected()
         self.publish_books()
 
+    def folder_sizes(self) -> dict:
+        """Размеры папок в байтах: книги и индексы."""
+        def size(path):
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for f in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        pass
+            return total
+        return {'books': size(self.paths.books_dir), 'index': size(self.paths.index_dir)}
+
     def book_rows(self) -> List[dict]:
         rows = []
         for b in self.library.books:

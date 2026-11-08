@@ -84,6 +84,9 @@ app.open_append()
 app.open_diary()
 assert c.export_conspect() is None or c.list_exports()
 app.open_about(); app.confirm_exit()
+app.books_s.choose_to_index([{'file_name': 'a.txt', 'display': 'A', 'size_kb': 1}, {'file_name': 'b.txt', 'display': 'B', 'size_kb': 2}])
+app.books_s.index_needed()
+assert c.folder_sizes()['books'] >= 0
 assert c.outcome.results == [] and c.reading is None      # смена вида/темы сбросила вкладки
 c.submit_query('вера')
 # выделение: долгое нажатие на слово и подчёркивание
