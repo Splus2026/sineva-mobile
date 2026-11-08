@@ -33,13 +33,13 @@ THEMES = {
     'day': dict(BG=(0.91, 0.94, 0.98, 1), CARD=(0.78, 0.85, 0.93, 1), TXT=(0.08, 0.13, 0.24, 1),
                 BODY=(0.05, 0.08, 0.15, 1), ACCENT=(0.25, 0.42, 0.66, 1), GRAY=(0.45, 0.5, 0.6, 1),
                 NAV=(0.84, 0.89, 0.96, 1), NAV_TXT=(0.25, 0.42, 0.66, 1), BTN2=(0.9, 0.93, 0.98, 1),
-                BTN2_TXT=(0.25, 0.42, 0.66, 1), MARK_RGBA=(0.04, 0.16, 0.55, 1), MARK_COLOR='0a2a8c', HL_TEXT=''),
+                BTN2_TXT=(0.25, 0.42, 0.66, 1), INPUT_BG=(1, 1, 1, 1), MARK_RGBA=(0.04, 0.16, 0.55, 1), MARK_COLOR='0a2a8c', HL_TEXT=''),
     'night': dict(BG=(0.12, 0.13, 0.19, 1), CARD=(0.24, 0.29, 0.48, 1), TXT=(0.93, 0.94, 0.98, 1),
                   BODY=(0.93, 0.94, 0.98, 1), ACCENT=(0.33, 0.42, 0.7, 1), GRAY=(0.4, 0.43, 0.56, 1),
                   NAV=(0.09, 0.1, 0.15, 1), NAV_TXT=(0.75, 0.8, 0.96, 1), BTN2=(0.19, 0.22, 0.36, 1),
-                  BTN2_TXT=(0.8, 0.85, 1, 1), MARK_RGBA=(0.62, 0.78, 1, 1), MARK_COLOR='9ec7ff', HL_TEXT='000000'),
+                  BTN2_TXT=(0.8, 0.85, 1, 1), INPUT_BG=(0.17, 0.2, 0.32, 1), MARK_RGBA=(0.62, 0.78, 1, 1), MARK_COLOR='9ec7ff', HL_TEXT='000000'),
 }
-BG = CARD = TXT = BODY = ACCENT = GRAY = NAV = NAV_TXT = BTN2 = BTN2_TXT = None
+INPUT_BG = BG = CARD = TXT = BODY = ACCENT = GRAY = NAV = NAV_TXT = BTN2 = BTN2_TXT = None
 
 
 def apply_theme(name):
@@ -302,6 +302,7 @@ class SearchScreen(Screen):
     def __init__(self, app, reading=False, **kw):
         super().__init__(name='read' if reading else 'search', **kw)
         self.app, self.ctl, self.reading_screen = app, app.ctl, reading
+        self._tok = 0
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._more_btn = None
@@ -309,13 +310,21 @@ class SearchScreen(Screen):
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
         self.input = no_bubble(TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
-                               font_size=sp(22), write_tab=False))
-        def center(w, *a):
+                               font_size=sp(22), write_tab=False, background_normal='', background_active='',
+                               background_color=INPUT_BG, foreground_color=TXT, cursor_color=TXT,
+                               hint_text_color=(0.5, 0.52, 0.6, 1)))
+
+        def fit(w, *a):
+            """Высота и вертикальные отступы подбираются по высоте строки: верх и низ букв не срезаются."""
             lh = w.line_height if isinstance(w.line_height, (int, float)) else 30
-            pad = max(0, (w.height - lh) / 2)
+            h = max(dp(56), lh + dp(22))
+            w.height = h
+            top.height = h
+            pad = (h - lh) / 2
             w.padding = [dp(10), pad, dp(10), pad]
-        self.input.bind(size=center, font_size=center)
-        center(self.input)
+        self.input.size_hint_y = None
+        self.input.bind(line_height=fit, font_size=fit)
+        fit(self.input)
         self.input.bind(text=lambda w, v: self.ctl.on_query_changed(v))      # только запоминает запрос
         self.input.bind(on_text_validate=lambda *_: self.search())
         self.go = Button(text='Поиск', size_hint_x=None, width=dp(100), background_normal='',
@@ -347,33 +356,22 @@ class SearchScreen(Screen):
         self.status.text = escape_markup(text + self._suffix)
 
     def show_cards(self, cards, total, more):
+        """Карточки рисуются постепенно: первая сразу, остальные по одной на кадр — пока пользователь
+           читает первые, дорисовываются следующие (экран не ждёт, пока будет готово всё)."""
         t0 = time.time()
         self._suffix = ''
         ctl = self.ctl
+        self._tok += 1
+        tok = self._tok
         ev, ctl.pending_append = ctl.pending_append, None
         reading = ctl.reading
         fresh = bool(reading and reading.pop('fresh', False))
         keys = [c['key'] for c in cards]
-
-        def more_button():
-            self._more_btn = btn(ctl.more_label or 'Показать ещё', ctl.show_more)
-            self.box.add_widget(self._more_btn)
-
-        def full():
-            self.box.clear_widgets()
-            self._cards, self._widgets, self._more_btn = [], {}, None
-            for c in cards:
-                w = self._card(c)
-                self._cards.append(w)
-                self.box.add_widget(w)
-            if more:
-                more_button()
-            elif not cards and not self.reading_screen and ctl.query.strip():
-                self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
-
+        incremental = bool(ev and self._keys and keys[:len(self._keys) - ev['drop']] == self._keys[ev['drop']:])
+        if not incremental and any(c.get('stub') for c in cards):
+            cards = ctl.full_cards()                       # заглушки годятся только для дорисовки
         shift = 0
-        if ev and self._keys and keys[:len(self._keys) - ev['drop']] == self._keys[ev['drop']:]:
-            # «Показать ещё»: уже нарисованные карточки не трогаем; сверху убираем ушедшие за окно, снизу дорисовываем
+        if incremental:
             drop, new = ev['drop'], ev['new']
             gone = self._cards[:drop]
             shift = sum(w.height for w in gone) + dp(6) * drop
@@ -385,25 +383,40 @@ class SearchScreen(Screen):
             if self._more_btn is not None:
                 self.box.remove_widget(self._more_btn)
                 self._more_btn = None
-            for c in cards[len(cards) - new:]:
-                w = self._card(c)
-                self._cards.append(w)
-                self.box.add_widget(w)
-            if more:
-                more_button()
+            todo = list(cards[len(cards) - new:])
             keep_scroll(self.sv, lambda: None, shift)
         else:
-            keep_scroll(self.sv, full)
+            def reset():
+                self.box.clear_widgets()
+                self._cards, self._widgets, self._more_btn = [], {}, None
+            keep_scroll(self.sv, reset)
+            todo = list(cards)
         self._keys = keys
-        if fresh:
-            self.sv.scroll_y = 1                                 # новое чтение — с начала
-        built = (time.time() - t0) * 1000
+        if fresh or (not incremental and not self.reading_screen):
+            self.sv.scroll_y = 1                                 # новая выдача — с начала
 
-        def done(dt):                                      # после первого кадра: виджеты созданы, текстуры нарисованы
-            total_ms = (time.time() - t0) * 1000
-            self._suffix = f" · карточки: {built:.0f} мс, с отрисовкой {total_ms:.0f} мс"
+        def finish():
+            if more:
+                self._more_btn = btn(ctl.more_label or 'Показать ещё', ctl.show_more)
+                self.box.add_widget(self._more_btn)
+            elif not cards and not self.reading_screen and ctl.query.strip():
+                self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
+            built = (time.time() - t0) * 1000
+            self._suffix = f" · карточки: {built:.0f} мс"
             self.status.text = escape_markup(self._base + self._suffix)
-        Clock.schedule_once(lambda dt: Clock.schedule_once(done, 0.05), 0)
+
+        def step(dt):
+            if tok != self._tok:                           # пришла новая выдача — эта дорисовка не нужна
+                return
+            if todo:
+                w = self._card(todo.pop(0))
+                self._cards.append(w)
+                self.box.add_widget(w)
+            if todo:
+                Clock.schedule_once(step, 0)
+            else:
+                finish()
+        step(0)
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
@@ -737,9 +750,24 @@ class SinevaApp(App):
         Window.clearcolor = BG
 
     def _init_app(self, dt):
+        """Запуск по шагам, по одному на кадр: заставка не замирает, пока строится интерфейс."""
+        steps = [self._init_core, self._init_ui, self._init_finish]
+
+        def run(dt2=0):
+            steps.pop(0)()
+            if steps:
+                Clock.schedule_once(run, 0.05)
+        run()
+
+    def _init_core(self):
         self.ctl = Controller(ui_post=ui_post, schedule=schedule)
         apply_theme(self.ctl.config.get('theme', 'day'))
-        root = self._make_root()
+
+    def _init_ui(self):
+        self._root_tmp = self._make_root()
+
+    def _init_finish(self):
+        root = self._root_tmp
         Window.bind(on_keyboard=self._on_key)
         Window.bind(on_request_close=lambda *a: (self.confirm_exit(), True)[1])
         try:
@@ -808,9 +836,9 @@ class SinevaApp(App):
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
 
     def go_tab(self, name):
-        self.sm.current = name
-        if name in ('search', 'read'):
-            self.ctl.set_tab(name)
+        self.sm.current = name                              # экран открывается сразу,
+        if name in ('search', 'read'):                      # а содержимое готовится уже после его отрисовки
+            Clock.schedule_once(lambda dt: self.ctl.set_tab(name), 0)
 
     def on_resume(self):
         if getattr(self, 'ctl', None) is None or self.ready_root is None:
@@ -859,7 +887,7 @@ class SinevaApp(App):
 
     def ask_continue(self, book, number, cont, start):
         box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
-        box.add_widget(Label(text=f"Продолжить чтение «{book}» с блока {number}?", font_size=sp(16),
+        box.add_widget(Label(text="Продолжить предыдущее чтение книги?", font_size=sp(17),
                              halign='center', valign='middle'))
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
         pop = top_popup('Режим чтения', box, dp(200))

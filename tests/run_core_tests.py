@@ -301,7 +301,7 @@ try:
           and ctl.win_start == 4 and ctl.pending_append == {'drop': 3, 'new': 3}, f"{len(got['cards'])} start={ctl.win_start}")
     check('выгруженные карточки освобождают текст', ctl.outcome.results[0]['content'] is None)
     check('подпись кнопки', ctl.more_label == 'Показать ещё 3', ctl.more_label)
-    check('номера карточек продолжаются', '5.' in got['cards'][0]['header'], got['cards'][0]['header'])
+    check('номера карточек продолжаются', '24.' in got['cards'][-1]['header'] and got['cards'][0].get('stub') and len(ctl.full_cards()) == 20 and not ctl.full_cards()[0].get('stub'), got['cards'][-1]['header'])
     for b in ('bibl.txt', 'Грани.txt'):
         ctl.toggle_book(b)
     ctl.config.set('page_size', 50)
@@ -396,7 +396,7 @@ try:
     check('чтение: «Показать ещё» дорисовывает', len(rg['cards']) == 4 and rg['cards'][2]['text'] != first_text
           and rc.pending_append == {'drop': 0, 'new': 2} or rc.pending_append is None)
     rc.set_tab('search'); rc.set_tab('read')
-    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 1' in rg['cards'][0]['header'])
+    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 1' in rc.full_cards()[0]['header'])
     rc2 = Controller(paths, run_async=False)
     rg2 = {}
     rc2.on_cards = lambda cards, total, more: rg2.update(cards=cards)

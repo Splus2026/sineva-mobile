@@ -256,23 +256,36 @@ class Controller:
     def _items(self):
         return self.outcome.results if self.reading else self.search.visible(self.outcome)
 
-    def _publish(self) -> None:
-        self.dirty.discard(self.tab)
-        self.dirty.add('read' if self.tab == 'search' else 'search')     # карточки другой вкладки теперь устарели
+    def _build(self, light: bool):
+        """Карточки показанного окна. light — для «Показать ещё»: полностью строятся только новые карточки,
+           остальные — заглушки {'key', 'stub'} (интерфейс их не перерисовывает)."""
         items = self._items()
         brief = self.config.get_bool('brief_view', False) and not self.reading
         start = 0 if self.reading else self.win_start
         count = len(items) if self.reading else max(0, min(self.shown, len(items) - start))
         seg = items[start:start + count]
         self.search.fill(seg)                              # текст подгружается только для показанных
+        keep_from = len(seg) - self.pending_append['new'] if light and self.pending_append else 0
         cards = []
         for i, item in enumerate(seg):
             key = f"{item['book']}:{item['rowid']}"
+            if i < keep_from:
+                cards.append({'key': key, 'stub': True})
+                continue
             expanded = key in self.expanded
             cards.append(self._card(start + i, key, item, brief and not expanded, expanded))
         has_more = self.reading['has_next'] if self.reading else (start + count < len(items))
+        return cards, len(items), has_more
+
+    def full_cards(self):
+        return self._build(False)[0]
+
+    def _publish(self) -> None:
+        self.dirty.discard(self.tab)
+        self.dirty.add('read' if self.tab == 'search' else 'search')     # карточки другой вкладки теперь устарели
+        cards, total, has_more = self._build(True)
         self.more_label = f"Показать ещё {self.config.get_int('page_size', 3)}" if has_more else ''
-        self.on_cards(cards, len(items), has_more)
+        self.on_cards(cards, total, has_more)
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
 
