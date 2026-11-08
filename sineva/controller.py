@@ -53,6 +53,7 @@ class Controller:
         self.selected = self._load_selected()
         self._token = 0
         self._timer = None
+        self.on_reset = lambda: None            # интерфейс очищает карточки обеих вкладок
         self.tab = 'search'                     # активная вкладка с карточками: 'search' | 'read'
         self._states = {}                       # сохранённые состояния неактивной вкладки
         self.dirty = set()                      # вкладки, карточки которых устарели (шрифт, вид) и перерисуются при входе
@@ -274,6 +275,20 @@ class Controller:
         self.on_cards(cards, len(items), has_more)
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
+
+    def reset_views(self) -> None:
+        """Сброс вкладок «Поиск» и «Чтение» (смена шрифта/вида): ничего не перерисовывается, результаты
+           очищаются — быстрее, чем перестраивать до 20 карточек. Поиск и чтение запускаются заново."""
+        self._token += 1
+        self._states.clear()
+        self.outcome = SearchOutcome()
+        self.shown = self.win_start = 0
+        self.offsets, self.expanded = {}, set()
+        self.reading = None
+        self.pending_append = None
+        self.more_label = ''
+        self.dirty.clear()
+        self.on_reset()
 
     def _release(self, items) -> None:
         """Выгрузка из памяти карточек, ушедших за пределы окна."""

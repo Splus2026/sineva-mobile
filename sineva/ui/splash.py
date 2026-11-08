@@ -50,7 +50,7 @@ class Splash(Widget):
     def _tick(self, dt):
         self.t += min(dt, 0.1)
         t = self.t
-        self.logo_color.a = min(1.0, t / 0.9)
+        self.logo_color.a = min(1.0, max(0.0, (t - 0.3) / 1.6))      # круг проявляется вместе со словом
         size0 = self.cell / self.smoke.sub
         for i, (col, rect) in enumerate(self.dots):
             x, y, sc, al = self.smoke.state(i, t)

@@ -83,6 +83,9 @@ assert c.export_marks('txt') is None or c.list_exports()
 app.open_append()
 app.open_diary()
 assert c.export_conspect() is None or c.list_exports()
+app.open_about(); app.confirm_exit()
+assert c.outcome.results == [] and c.reading is None      # смена вида/темы сбросила вкладки
+c.submit_query('вера')
 # выделение: долгое нажатие на слово и подчёркивание
 from sineva.ui.app import SelectableText
 cd = c.outcome and [x for x in c._publish.__self__.search.visible(c.outcome)]

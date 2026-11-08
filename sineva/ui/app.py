@@ -405,6 +405,11 @@ class SearchScreen(Screen):
             self.status.text = escape_markup(self._base + self._suffix)
         Clock.schedule_once(lambda dt: Clock.schedule_once(done, 0.05), 0)
 
+    def clear(self):
+        """Очистка карточек без перерисовки (после смены шрифта или вида)."""
+        self.box.clear_widgets()
+        self._keys, self._cards, self._widgets, self._more_btn = [], [], {}, None
+
     def _activate(self, widget):
         if self._active is not None and self._active is not widget:
             self._active.clear_selection()
@@ -510,10 +515,7 @@ class BooksScreen(Screen):
                       f"{escape_markup(r['status'])} · {r['separator']} · {r['size_kb']} КБ[/color][/size]")
         info.size_hint_y = 1
         info.bind(height=lambda *_: None)
-        from kivy.uix.image import Image
-        pic = Image(source=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'edit.png'),
-                    allow_stretch=True, keep_ratio=True)
-        edit = icon_button(pic, lambda r=r: self.edit(r), dp(56), (0.937, 0.953, 0.98, 1))
+        edit = icon_button(PencilIcon(), lambda r=r: self.edit(r), dp(56), BTN2)
         for w in (cb, info, edit):
             row.add_widget(w)
         return row
@@ -579,6 +581,35 @@ def icon_button(icon_widget, cb, width, bg):
     return b
 
 
+class PencilIcon(Widget):
+    """Пиктограмма «редактировать» (карандаш), цвет по теме."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *a):
+        import math
+        from kivy.graphics import Line, Quad, Triangle
+        self.canvas.clear()
+        s = min(self.width, self.height)
+        cx, cy = self.center_x, self.center_y
+        ax, ay = cx - 0.30 * s, cy - 0.30 * s                  # кончик
+        bx, by = cx + 0.28 * s, cy + 0.28 * s                  # противоположный конец
+        L = math.hypot(bx - ax, by - ay)
+        ux, uy = (bx - ax) / L, (by - ay) / L
+        nx, ny = -uy, ux
+        w, tip = 0.085 * s, 0.17 * s
+        with self.canvas:
+            Color(*BTN2_TXT)
+            Triangle(points=[ax, ay, ax + ux * tip + nx * w, ay + uy * tip + ny * w,
+                             ax + ux * tip - nx * w, ay + uy * tip - ny * w])
+            Quad(points=[ax + ux * (tip + dp(1.5)) + nx * w, ay + uy * (tip + dp(1.5)) + ny * w,
+                         ax + ux * (tip + dp(1.5)) - nx * w, ay + uy * (tip + dp(1.5)) - ny * w,
+                         bx - ux * 0.07 * s - nx * w, by - uy * 0.07 * s - ny * w,
+                         bx - ux * 0.07 * s + nx * w, by - uy * 0.07 * s + ny * w])
+            Line(points=[cx - 0.36 * s, cy - 0.40 * s, cx + 0.10 * s, cy - 0.40 * s], width=dp(1.6))
+
+
 class ShareIcon(Widget):
     """Системная пиктограмма «поделиться»: три жирные точки, соединённые в виде «<»."""
     def __init__(self, **kw):
@@ -631,30 +662,32 @@ class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name='settings', **kw)
         self.app, self.ctl = app, app.ctl
-        root = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
-        self.set_btn = btn('Настройки ▾', self.toggle_settings, color=GRAY)
-        root.add_widget(self.set_btn)
-        self.set_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
-        root.add_widget(self.set_box)
+        col = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(10), size_hint_y=None)
+        col.bind(minimum_height=col.setter('height'))
         font = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         self.font_label = mlabel(f"Размер шрифта: {self.ctl.config.get_int('font_size', 16)}")
         font.add_widget(self.font_label)
         font.add_widget(btn('−', lambda: self.font(-1), size_hint_x=None, width=dp(60)))
         font.add_widget(btn('+', lambda: self.font(1), size_hint_x=None, width=dp(60)))
-        root.add_widget(font)
+        col.add_widget(font)
         theme = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         cur = self.ctl.config.get('theme', 'day')
         theme.add_widget(btn('Обычный вид', lambda: self.app.set_theme('day'),
                              color=ACCENT if cur != 'night' else GRAY))
         theme.add_widget(btn('Ночной вид', lambda: self.app.set_theme('night'),
                              color=ACCENT if cur == 'night' else GRAY))
-        root.add_widget(theme)
-        root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед «Экспорт»
-        root.add_widget(btn('Экспорт', self.app.open_export, color=GRAY))
-        self.info = mlabel('', font_size=sp(13))
-        root.add_widget(self.info)
-        root.add_widget(BoxLayout())
-        self.add_widget(root)
+        col.add_widget(theme)
+        col.add_widget(divider())
+        col.add_widget(btn('Экспорт', self.app.open_export, color=GRAY))
+        col.add_widget(divider())
+        self.set_btn = btn('Настройки ▾', self.toggle_settings, color=GRAY)
+        col.add_widget(self.set_btn)
+        self.set_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
+        col.add_widget(self.set_box)
+        col.add_widget(btn('О программе', self.app.open_about, color=GRAY))
+        sv = ScrollView()
+        sv.add_widget(col)
+        self.add_widget(sv)
 
     def toggle_settings(self):
         """Скрытые элементы не лежат в разметке (иначе перехватывали бы нажатия)."""
@@ -666,15 +699,14 @@ class SettingsScreen(Screen):
         self.set_box.add_widget(mlabel('Текст блоков'))
         self.set_box.add_widget(segmented(
             [('Полный', 0), ('Краткий', 1)], 1 if self.ctl.config.get_bool('brief_view', False) else 0,
-            lambda v: (self.ctl.set_setting('brief_view', v), self.ctl.dirty.update(('search', 'read')),
-                       self.ctl._publish())))
+            lambda v: (self.ctl.set_setting('brief_view', v), self.ctl.reset_views(),
+                       self.ctl.on_status("Вид текста изменён: повторите поиск или откройте «Чтение»"))))
         self.set_box.add_widget(mlabel('Индексация'))
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
             lambda v: (self.ctl.set_setting('index_auto', v), self.ctl.rescan() if v else None)))
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.add_widget(divider())
-        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(12) + dp(6) * 5
+        self.set_box.height = dp(26) * 2 + dp(44) * 3 + dp(6) * 4
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
@@ -682,10 +714,6 @@ class SettingsScreen(Screen):
 
     def add_shortcut(self):
         add_home_shortcut(self.ctl.on_status)
-
-    def on_pre_enter(self, *a):
-        self.info.text = (f"Синева Mobile {__version__}\nПапка книг:\n{escape_markup(self.ctl.paths.books_dir)}\n"
-                          f"Конфигурация:\n{escape_markup(self.ctl.paths.config_path)}")
 
 
 # ===================================================================
@@ -713,6 +741,7 @@ class SinevaApp(App):
         apply_theme(self.ctl.config.get('theme', 'day'))
         root = self._make_root()
         Window.bind(on_keyboard=self._on_key)
+        Window.bind(on_request_close=lambda *a: (self.confirm_exit(), True)[1])
         try:
             Window.softinput_mode = 'below_target'
         except Exception:
@@ -738,8 +767,8 @@ class SinevaApp(App):
         self.search_s.input.text = query
         self.sm.current = cur
         self.ctl.publish_books()
-        self.ctl.dirty.update(('search', 'read'))
-        self.ctl._publish()
+        self.ctl.reset_views()
+        self.ctl.on_status("Вид изменён: повторите поиск или откройте «Чтение»")
 
     def _make_root(self):
         Window.clearcolor = BG
@@ -755,6 +784,7 @@ class SinevaApp(App):
         c.on_status = lambda t: (self.search_s.set_status(t), self.read_s.set_status(t), self.books_s.set_status(t))
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
+        c.on_reset = lambda: (self.search_s.clear(), self.read_s.clear())
         c.on_ask_continue = self.ask_continue
 
         root = BoxLayout(orientation='vertical')
@@ -802,6 +832,31 @@ class SinevaApp(App):
         elif result == 'unmarked':
             self.ctl.on_status('Подчёркивание снято')
 
+    def open_about(self):
+        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        box.add_widget(Label(
+            text=(f"Синева Mobile {__version__}\n\nПапка книг:\n{self.ctl.paths.books_dir}\n\n"
+                  f"Конфигурация:\n{self.ctl.paths.config_path}"),
+            font_size=sp(14), halign='left', valign='top', color=(1, 1, 1, 1),
+            text_size=(Window.width - dp(60), None)))
+        pop = top_popup('О программе', box, dp(380))
+        box.add_widget(btn('Закрыть', pop.dismiss, color=GRAY))
+        pop.open()
+
+    def confirm_exit(self):
+        if getattr(self, '_exit_pop', None) is not None:
+            return
+        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        box.add_widget(Label(text='Выйти из программы?', font_size=sp(18)))
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+        pop = top_popup('Выход', box, dp(180))
+        self._exit_pop = pop
+        pop.bind(on_dismiss=lambda *a: setattr(self, '_exit_pop', None))
+        row.add_widget(btn('Выйти', lambda: (pop.dismiss(), self.stop())))
+        row.add_widget(btn('Остаться', pop.dismiss, color=GRAY))
+        box.add_widget(row)
+        pop.open()
+
     def ask_continue(self, book, number, cont, start):
         box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
         box.add_widget(Label(text=f"Продолжить чтение «{book}» с блока {number}?", font_size=sp(16),
@@ -817,7 +872,8 @@ class SinevaApp(App):
     def change_font(self, delta):
         size = max(10, min(40, self.ctl.config.get_int('font_size', 16) + delta))
         self.ctl.set_setting('font_size', size)
-        self.ctl._publish()
+        self.ctl.reset_views()
+        self.ctl.on_status(f"Шрифт {size}: повторите поиск или откройте «Чтение»")
         return size
 
     # ---------- «Дополнение книги» ----------
@@ -951,7 +1007,14 @@ class SinevaApp(App):
         show_tail()
 
     def _on_key(self, window, key, *a):
-        if key == 27 and getattr(self, 'ready_root', None) is not None and self.sm.current != 'search':       # «Назад» возвращает на поиск
-            self.go_tab('search')
+        if key == 27:                                       # «Назад»
+            if getattr(self, 'ready_root', None) is None:
+                return True
+            if getattr(self, '_exit_pop', None) is not None:
+                self._exit_pop.dismiss()
+            elif self.sm.current != 'search':
+                self.go_tab('search')
+            else:
+                self.confirm_exit()
             return True
         return False
