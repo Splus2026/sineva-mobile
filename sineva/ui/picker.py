@@ -165,25 +165,64 @@ def _desktop_chooser(on_paths):
     pop.open()
 
 
+_SHARED = {}              # локальный путь -> (uri, видимый путь): файл копируется в «Документы» один раз
+
+
+def _mime(path):
+    ext = os.path.splitext(path)[1].lower()
+    return {'.txt': 'text/plain', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}.get(
+        ext, '*/*')
+
+
+def publish_shared(path):
+    """Android: копия файла в общую папку «Документы/<название приложения>» (видна в «Файлах» и доступна другим
+       приложениям). Возвращает (uri, видимый_путь). На ПК и при ошибке — исключение/None."""
+    if path in _SHARED:
+        return _SHARED[path]
+    from androidstorage4kivy import SharedStorage      # type: ignore
+    from jnius import autoclass                         # type: ignore
+    uri = SharedStorage().copy_to_shared(path)
+    ctx = autoclass('org.kivy.android.PythonActivity').mActivity
+    try:
+        label = ctx.getApplicationInfo().loadLabel(ctx.getPackageManager()).toString()
+    except Exception:
+        label = 'Синева+'
+    shown = f"Documents/{label}/{os.path.basename(path)}"
+    _SHARED[path] = (uri, shown)
+    return _SHARED[path]
+
+
 def share_file(path, status=lambda text: None):
-    """«Поделиться файлом»: на Android — системное меню отправки (мессенджер, почта, диск);
-       если оно недоступно — копия в общую папку «Документы». На ПК просто сообщает путь."""
-    if is_android():
+    """«Поделиться файлом»: файл копируется в «Документы» и открывается системное меню отправки
+       (мессенджеры, почта, диск). На ПК просто сообщает путь."""
+    if not is_android():
+        status(f"Файл: {path}")
+        return
+    uri, shown = None, None
+    try:
+        uri, shown = publish_shared(path)
+    except Exception as e:
+        status(f"Не удалось скопировать в «Документы»: {e}. Файл: {path}")
+    if uri is not None:
         try:
-            from androidstorage4kivy import ShareSheet
-            ShareSheet().share_file(path)
-            return
-        except Exception:
-            pass
-        try:
-            from androidstorage4kivy import SharedStorage
-            SharedStorage().copy_to_shared(path)
-            status(f"Файл скопирован в общую папку «Документы»: {os.path.basename(path)}")
+            from jnius import autoclass, cast           # type: ignore
+            Intent = autoclass('android.content.Intent')
+            String = autoclass('java.lang.String')
+            act = autoclass('org.kivy.android.PythonActivity').mActivity
+            intent = Intent(Intent.ACTION_SEND)
+            intent.setType(_mime(path))
+            intent.putExtra(Intent.EXTRA_STREAM, cast('android.os.Parcelable', uri))
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            act.startActivity(Intent.createChooser(intent, cast('java.lang.CharSequence', String('Отправить файл'))))
+            status(f"Файл: {shown}")
             return
         except Exception as e:
-            status(f"Не удалось поделиться: {e}. Файл: {path}")
-            return
-    status(f"Файл: {path}")
+            status(f"Меню отправки не открылось ({e}). Файл сохранён: {shown}")
+    try:                                                # запасной путь: стандартный ShareSheet библиотеки
+        from androidstorage4kivy import ShareSheet     # type: ignore
+        ShareSheet().share_file(path)
+    except Exception:
+        pass
 
 
 def add_home_shortcut(status=lambda text: None):

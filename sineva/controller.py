@@ -520,6 +520,17 @@ class Controller:
         content = '\n'.join(sections[-1]['lines']).strip()
         return ('… ' + content[-max_chars:]) if len(content) > max_chars else content
 
+    def diary_tail(self, max_chars: int = 3000) -> str:
+        """Конец дневника (последние записи) — показывается в верхней части окна «Дневник»."""
+        path = self.paths.diary_path
+        if not os.path.exists(path):
+            return ''
+        try:
+            text = read_text_file(path).rstrip()
+        except Exception as e:
+            return f"(не удалось прочитать: {e})"
+        return ('… ' + text[-max_chars:]) if len(text) > max_chars else text
+
     def append_to_book(self, file_name: str, text: str) -> bool:
         book = self.library.find(file_name)
         if book is None:

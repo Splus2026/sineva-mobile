@@ -23,7 +23,7 @@ from kivy.uix.textinput import TextInput
 from .. import __version__
 from ..controller import Controller
 from ..search import escape_markup
-from .picker import add_home_shortcut, pick_files, share_file
+from .picker import add_home_shortcut, pick_files, publish_shared, share_file
 from . import textmodel
 from .textmodel import atom_at, build_markup
 
@@ -64,6 +64,17 @@ def top_popup(title, content, height):
     h = min(height, Window.height * 0.5)
     return Popup(title=title, content=content, size_hint=(1, None), height=h, pos_hint={'top': 1},
                  auto_dismiss=False, title_size=sp(15), separator_height=dp(2))
+
+
+def tall_popup(title, content):
+    """Диалог от верха экрана до строки вкладок Поиск/Книги/Ещё."""
+    pop = Popup(title=title, content=content, size_hint=(1, None), pos_hint={'top': 1},
+                auto_dismiss=False, title_size=sp(15), separator_height=dp(2))
+    fit = lambda *a: setattr(pop, 'height', max(dp(200), Window.height - dp(52)))
+    fit()
+    Window.bind(size=fit)
+    pop.bind(on_dismiss=lambda *a: Window.unbind(size=fit))
+    return pop
 
 
 class ClockTimer:
@@ -480,9 +491,9 @@ class SettingsScreen(Screen):
         root.add_widget(font)
         theme = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         cur = self.ctl.config.get('theme', 'day')
-        theme.add_widget(btn('Обычный', lambda: self.app.set_theme('day'),
+        theme.add_widget(btn('Обычный вид', lambda: self.app.set_theme('day'),
                              color=ACCENT if cur != 'night' else GRAY))
-        theme.add_widget(btn('Ночной (экономит заряд)', lambda: self.app.set_theme('night'),
+        theme.add_widget(btn('Ночной вид', lambda: self.app.set_theme('night'),
                              color=ACCENT if cur == 'night' else GRAY))
         root.add_widget(theme)
         root.add_widget(Widget(size_hint_y=None, height=dp(24)))         # пустая строка перед «Экспорт»
@@ -499,14 +510,18 @@ class SettingsScreen(Screen):
             self.set_box.height = 0
             self.set_btn.text = 'Настройки ▾'
             return
-        brief = BoxLayout(size_hint_y=None, height=dp(48))
-        brief.add_widget(mlabel('Краткий вид (только предложения с совпадениями); выключено — полный'))
-        sw = Switch(active=self.ctl.config.get_bool('brief_view', False), size_hint_x=None, width=dp(90))
-        sw.bind(active=lambda w, v: (self.ctl.set_setting('brief_view', 1 if v else 0), self.ctl._publish()))
-        brief.add_widget(sw)
-        self.set_box.add_widget(brief)
+        def view_text():
+            return 'Вид: краткий (только предложения с совпадениями)' if self.ctl.config.get_bool('brief_view', False) \
+                else 'Вид: полный (топик целиком)'
+
+        def flip():
+            self.ctl.set_setting('brief_view', 0 if self.ctl.config.get_bool('brief_view', False) else 1)
+            vb.text = view_text()
+            self.ctl._publish()
+        vb = btn(view_text(), flip)
+        self.set_box.add_widget(vb)
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
-        self.set_box.height = dp(48) + dp(44) + dp(6)
+        self.set_box.height = dp(44) * 2 + dp(6)
         self.set_btn.text = 'Настройки ▴'
 
     def font(self, delta):
@@ -534,6 +549,10 @@ class SinevaApp(App):
         apply_theme(self.ctl.config.get('theme', 'day'))
         root = self._make_root()
         Window.bind(on_keyboard=self._on_key)
+        try:
+            Window.softinput_mode = 'resize'
+        except Exception:
+            pass
         self.ctl.publish_books()
         if not self.ctl.library.books:
             self.sm.current = 'books'
@@ -621,7 +640,7 @@ class SinevaApp(App):
         text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
                          size_hint_y=0.6, font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = top_popup('Дополнение книги', box, dp(420))
+        pop = tall_popup('Дополнение книги', box)
 
         def show_last(*_):
             last.text = 'Загрузка…'
@@ -641,7 +660,7 @@ class SinevaApp(App):
                 pop.dismiss()
 
         row.add_widget(btn('Добавить', add))
-        row.add_widget(btn('Вставить', paste, color=GRAY))
+        row.add_widget(btn('CTR+V', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
         for w in (spin, last, text, row):
             box.add_widget(w)
@@ -684,6 +703,11 @@ class SinevaApp(App):
             if path:
                 state['sel'] = path
                 fill()
+                try:
+                    shown = publish_shared(path)[1]
+                    self.ctl.on_status(f"Сохранено: {shown}  (внутренняя копия: {path})")
+                except Exception:
+                    self.ctl.on_status(f"Сохранено: {path}")
 
         box.add_widget(mlabel('Что экспортировать:', color=(1, 1, 1, 1)))
         grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(4 * 46), spacing=dp(6))
@@ -703,10 +727,18 @@ class SinevaApp(App):
         pop.open()
 
     def open_diary(self):
-        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
-        text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True, font_size=sp(16))
+        """Две части: сверху конец дневника (последние записи), снизу поле новой записи."""
+        box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        last = TextInput(text='', readonly=True, size_hint_y=0.4, font_size=sp(13),
+                         background_color=(0.94, 0.95, 0.98, 1), foreground_color=(0.25, 0.25, 0.3, 1))
+        text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True,
+                         size_hint_y=0.6, font_size=sp(16))
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = top_popup('Дневник', box, dp(300))
+        pop = tall_popup('Дневник', box)
+
+        def show_tail(dt=None):
+            last.text = self.ctl.diary_tail() or '(дневник пока пуст)'
+            Clock.schedule_once(lambda d: setattr(last, 'cursor', last.get_cursor_from_index(len(last.text))), 0.05)
 
         def paste():
             text.text = text.text + (Clipboard.paste() or '')
@@ -716,12 +748,12 @@ class SinevaApp(App):
                 pop.dismiss()
 
         row.add_widget(btn('Записать', add))
-        row.add_widget(btn('Вставить', paste, color=GRAY))
+        row.add_widget(btn('CTR+V', paste, color=GRAY))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
-        box.add_widget(text)
-        box.add_widget(row)
+        for w in (last, text, row):
+            box.add_widget(w)
         pop.open()
-        Clock.schedule_once(lambda dt: setattr(text, 'focus', True), 0.2)
+        show_tail()
 
     def _on_key(self, window, key, *a):
         if key == 27 and self.sm.current != 'search':       # «Назад» возвращает на поиск
