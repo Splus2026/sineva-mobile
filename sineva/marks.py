@@ -20,6 +20,7 @@
    Отметка не теряется даже когда её не удаётся показать (текст в источнике
    изменили): она остаётся в базе и попадает в экспорт."""
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -44,6 +45,16 @@ def file_key(file_name) -> str:
     """Ключ файла: имя без папки, без учёта регистра. Один и тот же файл
        приходит и как "bibl.txt", и как "DB\\bibl.txt"."""
     return os.path.basename(str(file_name or '').replace('\\', '/')).strip().lower()
+
+
+def mark_uid(file_key_: str, fragment: str, before: str, after: str) -> str:
+    """Устойчивый идентификатор отметки (одинаков на телефоне и на ПК): по содержимому, а не по номеру строки."""
+    raw = '\x1f'.join((file_key_ or '', fragment or '', before or '', after or ''))
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:20]
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec='seconds')
 
 
 def file_label(file_name) -> str:
@@ -246,6 +257,7 @@ class MarksStore:
                          "id INTEGER PRIMARY KEY AUTOINCREMENT, file_key TEXT NOT NULL, "
                          "file_label TEXT, fragment TEXT NOT NULL, before TEXT, after TEXT, created TEXT)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_marks_file ON marks(file_key)")
+            conn.execute("CREATE TABLE IF NOT EXISTS tombstones (uid TEXT PRIMARY KEY, at TEXT NOT NULL)")   # снятые отметки (для синхронизации)
             conn.commit()
             self._conn = conn
         return self._conn
@@ -268,6 +280,7 @@ class MarksStore:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (key, file_label(file_name), fragment, before, after,
                  datetime.now().isoformat(timespec='seconds')))
+            conn.execute("DELETE FROM tombstones WHERE uid = ?", (mark_uid(key, fragment, before, after),))
             conn.commit()
             self._cache.pop(key, None)
             return cur.lastrowid
@@ -281,9 +294,11 @@ class MarksStore:
             for i in range(0, len(ids), 500):
                 chunk = ids[i:i + 500]
                 marks_sql = ",".join("?" * len(chunk))
-                for (key,) in conn.execute(
-                        f"SELECT DISTINCT file_key FROM marks WHERE id IN ({marks_sql})", chunk).fetchall():
+                for key, frag, bef, aft in conn.execute(
+                        f"SELECT file_key, fragment, before, after FROM marks WHERE id IN ({marks_sql})", chunk).fetchall():
                     self._cache.pop(key, None)
+                    conn.execute("INSERT OR REPLACE INTO tombstones (uid, at) VALUES (?, ?)",
+                                 (mark_uid(key, frag, bef, aft), _now()))
                 conn.execute(f"DELETE FROM marks WHERE id IN ({marks_sql})", chunk)
             conn.commit()
 
@@ -292,6 +307,13 @@ class MarksStore:
         with self._lock:
             conn = self._connect()
             key = file_key(file_name)
+            old = {mark_uid(key, f, b, a) for f, b, a in conn.execute(
+                "SELECT fragment, before, after FROM marks WHERE file_key = ?", (key,)).fetchall()}
+            keep = {mark_uid(m.file_key, m.fragment, m.before, m.after) for m in snapshot}
+            for uid in old - keep:
+                conn.execute("INSERT OR REPLACE INTO tombstones (uid, at) VALUES (?, ?)", (uid, _now()))
+            for uid in keep:
+                conn.execute("DELETE FROM tombstones WHERE uid = ?", (uid,))
             conn.execute("DELETE FROM marks WHERE file_key = ?", (key,))
             for m in snapshot:
                 conn.execute("INSERT INTO marks (file_key, file_label, fragment, before, after, created) "
@@ -306,6 +328,37 @@ class MarksStore:
                 "SELECT id, file_key, file_label, fragment, before, after, created "
                 "FROM marks ORDER BY file_key, id").fetchall()
             return [Mark(*row) for row in rows]
+
+    # ---------- синхронизация ----------
+    def sync_snapshot(self):
+        """(список отметок как словари, {uid: время снятия}) — то, что уходит в общий файл."""
+        with self._lock:
+            marks = [{'uid': mark_uid(m.file_key, m.fragment, m.before, m.after), 'file_key': m.file_key,
+                      'file_label': m.file_label, 'fragment': m.fragment, 'before': m.before or '',
+                      'after': m.after or '', 'created': m.created or ''} for m in self.all_marks()]
+            tombs = dict(self._connect().execute("SELECT uid, at FROM tombstones").fetchall())
+            return marks, tombs
+
+    def sync_apply(self, add, remove_uids, tombs):
+        """Применяет результат слияния: добавляет чужие отметки, убирает снятые, заменяет таблицу следов."""
+        with self._lock:
+            conn = self._connect()
+            gone = set(remove_uids)
+            if gone:
+                for rid, key, frag, bef, aft in conn.execute(
+                        "SELECT id, file_key, fragment, before, after FROM marks").fetchall():
+                    if mark_uid(key, frag, bef, aft) in gone:
+                        conn.execute("DELETE FROM marks WHERE id = ?", (rid,))
+            for m in add:
+                conn.execute("INSERT INTO marks (file_key, file_label, fragment, before, after, created) "
+                             "VALUES (?, ?, ?, ?, ?, ?)",
+                             (m['file_key'], m.get('file_label', ''), m['fragment'], m.get('before', ''),
+                              m.get('after', ''), m.get('created', '')))
+            conn.execute("DELETE FROM tombstones")
+            for uid, at in tombs.items():
+                conn.execute("INSERT INTO tombstones (uid, at) VALUES (?, ?)", (uid, at))
+            conn.commit()
+            self._cache.clear()
 
     def close(self):
         with self._lock:

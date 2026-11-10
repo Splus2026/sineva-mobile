@@ -214,7 +214,7 @@ try:
     check('короткий запрос — подсказка, поиска нет', 'не менее' in got['status'] and got['cards'] is None)
     ctl.submit_query('довер')
     check('кнопка «Поиск» выдала карточки', got['cards'] and got['total'] >= 2, str(got['status']))
-    check('в статусе число топиков', 'Найдено топиков' in got['status'])
+    check('в статусе запрос и число блоков', "найдено блоков" in got['status'])
     check('по умолчанию топик целиком', all(not c['expanded'] and c['segments'] == [(0, 0, len(c['text']))] for c in got['cards']))
     check('в карточке есть жёлтые участки', any(c['hl'] for c in got['cards']))
     n_cards = len(got['cards'])
@@ -496,6 +496,64 @@ try:
     check('большая книга: поиск < 3 с', t_s < 3)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
+
+# ---- родная отрисовка: HTML карточек
+from sineva.ui import htmlview, nativeview
+import re as _re
+_c = {'key': 'a.txt:5', 'header': '[b]Блок[/b] [size=12sp][color=777777]x[/color][/size]', 'text': 'Я <люблю> тебя & вас',
+      'hl': [(2, 9, 2)], 'marks': [(10, 14)], 'expanded': False}
+_h = htmlview.card_html(_c, True)
+check('html: экранирование', '&lt;люблю&gt;' in _h and '&amp;' in _h and '<люблю>' not in _h)
+check('html: подсветка и подчёркивание', 'hl2' in _h and 'mk' in _h and 'data-key="a.txt:5"' in _h)
+check('html: кнопка Полностью', 'Полностью' in _h and 'Полностью' not in htmlview.card_html(_c))
+_spans = [(int(a), int(b)) for a, b in _re.findall(r'data-a="(\d+)" data-b="(\d+)"', _h)]
+check('html: куски покрывают текст', bool(_spans) and _spans[0][0] == 0 and _spans[-1][1] == len(_c['text'])
+      and all(_spans[i][1] == _spans[i + 1][0] for i in range(len(_spans) - 1)))
+check('html: js_call экранирует', htmlview.js_call('setMore', 'a"b') == 'window.SV&&window.SV.setMore("a\\"b");')
+check('html: страница', 'setFont' in htmlview.page_html({'BG': (0, 0, 0, 1), 'CARD': (1, 1, 1, 1), 'BODY': (1, 1, 1, 1), 'ACCENT': (0, 0, 1, 1), 'MARK_COLOR': 'fff', 'HL_TEXT': ''}, 16))
+check('native: на ПК недоступен', nativeview.available() is False)
+
+# ---- синхронизация с папкой
+import json as _json
+from sineva import marks as _mk, syncmerge as _sm
+_t = tempfile.mkdtemp()
+try:
+    _A, _B = _mk.MarksStore(os.path.join(_t, 'a.db')), _mk.MarksStore(os.path.join(_t, 'b.db'))
+    _fold = _sm.DirFolder(os.path.join(_t, 'drive')); os.makedirs(_fold.path)
+    _fa = {'0_Конспект.txt': os.path.join(_t, 'a_k.txt'), 'dnev.txt': os.path.join(_t, 'a_d.txt')}
+    _fb = {'0_Конспект.txt': os.path.join(_t, 'b_k.txt'), 'dnev.txt': os.path.join(_t, 'b_d.txt')}
+    _A.add_mark('x.txt', 'вера', 'до ', ' после'); _A.add_mark('x.txt', 'надежда', 'a ', ' b')
+    open(_fa['0_Конспект.txt'], 'wb').write('.......вера\n(x)\n'.encode())
+    _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba'))
+    r = _sm.sync_all(_fold, _B, _fb, os.path.join(_t, 'bb'))
+    check('sync: отметки пришли на второе устройство', r['marks_added'] == 2 and len(_B.all_marks()) == 2)
+    check('sync: конспект пришёл', open(_fb['0_Конспект.txt'], 'rb').read() == '.......вера\n(x)\n'.encode())
+    # снятие на B доходит до A
+    _B.delete_marks([m.id for m in _B.all_marks() if m.fragment == 'вера'])
+    _sm.sync_all(_fold, _B, _fb, os.path.join(_t, 'bb'))
+    r = _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba'))
+    check('sync: снятие синхронизируется', r['marks_removed'] == 1 and [m.fragment for m in _A.all_marks()] == ['надежда'])
+    # подчёркнули заново на A — снова жива и у B
+    import time as _tm; _tm.sleep(1.1)
+    _A.add_mark('x.txt', 'вера', 'до ', ' после')
+    _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba')); _sm.sync_all(_fold, _B, _fb, os.path.join(_t, 'bb'))
+    check('sync: повторное подчёркивание оживает', sorted(m.fragment for m in _B.all_marks()) == ['вера', 'надежда'])
+    # дописали на обеих сторонах
+    open(_fa['dnev.txt'], 'ab').write('запись A\n'.encode()); open(_fb['dnev.txt'], 'ab').write('запись B\n'.encode())
+    _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba')); _sm.sync_all(_fold, _B, _fb, os.path.join(_t, 'bb')); _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba'))
+    da, db = open(_fa['dnev.txt'], 'rb').read().decode(), open(_fb['dnev.txt'], 'rb').read().decode()
+    check('sync: дневник — записи обеих сторон, без дублей', da == db and da.count('запись A') == 1 and da.count('запись B') == 1)
+    check('sync: повтор без изменений', _sm.sync_all(_fold, _A, _fa, os.path.join(_t, 'ba'))['texts_pushed'] == [])
+    check('sync: нет файла папки — не падает', _sm.merge_text(b'abc\n', None, None)[0] == b'abc\n')
+    check('sync: первая синхронизация разных файлов без дублей',
+          _sm.merge_text('.......а\n(x)\n.......б\n(y)\n'.encode(), '.......б\n(y)\n.......в\n(z)\n'.encode(), b'')[0].decode().count('.......б') == 1)
+    try:
+        _sm.merge_marks([], {}, b'{oops'); check('sync: битый json -> ошибка', False)
+    except ValueError:
+        check('sync: битый json -> ошибка', True)
+    _A.close(); _B.close()
+finally:
+    shutil.rmtree(_t, ignore_errors=True)
 
 print(f"Проверок: {TOTAL}, провалено: {len(FAILED)}")
 sys.exit(1 if FAILED else 0)

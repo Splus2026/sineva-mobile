@@ -42,8 +42,8 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
              ('spinner', 'Spinner'), ('switch', 'Switch'), ('textinput', 'TextInput')]:
     mod('kivy.uix.' + n, **{c: W})
 mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W); mod('kivy.uix.image', Image=W)
-mod('kivy.uix.filechooser', FileChooserListView=W)
-mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W)
+mod('kivy.uix.modalview', ModalView=type('ModalView', (), {})); mod('kivy.uix.filechooser', FileChooserListView=W)
+mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W, Ellipse=W)
 class _CV(_Ctx):
     pass
 
@@ -115,3 +115,35 @@ print('отмечено:', c.selection_marked(cards[0]['key'], 0, 4), c.card_mar
 app.books_s.on_pre_enter(); app.on_resume(); app.settings_s.add_shortcut()
 print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children),
       'подчёркнутых:', len(c.marks.all_marks()))
+
+# ---- родная отрисовка (WebView подменён заглушкой)
+from sineva.ui import nativeview as _nv
+calls = []
+class FakeNL:
+    def __init__(self, page, on_events, bg): self.on_events = on_events; self.view = 1
+    def call(self, js): calls.append(js)
+    def sync(self, g, v): pass
+    def poll(self): pass
+    def destroy(self): pass
+_nv.available = lambda: True
+_nv.NativeList = FakeNL
+app2 = SinevaApp()
+app2.build()
+for _ in range(120): app2.splash._tick(0.05)
+c2 = app2.ctl
+c2.run_async = False
+c2.set_setting('render', 'native')
+app2.root = object(); app2.set_theme('night'); app2.set_theme('day')
+assert app2.search_s._native_on
+app2.settings_s.toggle_settings(); app2.settings_s.toggle_settings()
+c2.index_books(['a.txt'])
+c2.submit_query('вера')
+assert any('setCards' in x and 'class=\\"card\\"' in x for x in calls), calls[:3]
+key = c2.outcome.results[0]['book'] + ':' + str(c2.outcome.results[0]['rowid'])
+app2.search_s._on_native([{'t': 'select', 'key': key, 's': 0, 'e': 4}])
+assert any('updateCard' in x for x in calls)
+assert len(c2.marks.all_marks()) >= 1
+app2.undo_mark()
+app2.search_s._on_native([{'t': 'more'}, {'t': 'expand', 'key': key}])
+app2.search_s.clear(); app2.search_s.destroy(); app2.read_s.destroy()
+print('native smoke OK, вызовов JS:', len(calls))

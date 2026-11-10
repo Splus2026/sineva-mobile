@@ -12,6 +12,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
+from kivy.uix.modalview import ModalView
 from kivy.uix.popup import Popup
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
@@ -27,6 +28,7 @@ from ..search import escape_markup
 from .picker import add_home_shortcut, pick_files, publish_shared, share_file
 from . import textmodel
 from .splash import Splash
+from . import htmlview, nativeview, safsync
 from .textmodel import atom_at, build_markup
 
 THEMES = {
@@ -143,12 +145,12 @@ class ReadBox(ScrollView):
     def __init__(self, to_end=False, **kw):
         super().__init__(bar_width=dp(4), **kw)
         self.to_end = to_end
-        self.lb = Label(color=(0.2, 0.2, 0.25, 1), size_hint_y=None, halign='left', valign='top', font_size=sp(14))
+        self.lb = Label(color=TXT, size_hint_y=None, halign='left', valign='top', font_size=sp(14))
         self.lb.bind(width=lambda w, v: setattr(w, 'text_size', (v - dp(8), None)))
         self.lb.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1] + dp(10)))
         self.add_widget(self.lb)
         with self.canvas.before:
-            Color(0.94, 0.95, 0.98, 1)
+            Color(*INPUT_BG)
             self._bg = Rectangle(pos=self.pos, size=self.size)
         self.bind(pos=lambda w, v: setattr(self._bg, 'pos', v), size=lambda w, v: setattr(self._bg, 'size', v))
 
@@ -166,6 +168,11 @@ def no_bubble(ti):
     """Без системной панели Copy/Cut/Paste и «капель» выделения поверх окон."""
     ti.use_bubble = False
     ti.use_handles = False
+    ti.background_normal = ti.background_active = ''             # цвета по теме (в ночном режиме поле не белое)
+    ti.background_color = INPUT_BG
+    ti.foreground_color = TXT
+    ti.cursor_color = TXT
+    ti.hint_text_color = (0.5, 0.52, 0.6, 1)
     return ti
 
 
@@ -305,6 +312,26 @@ class SelectableText(Label):
 
 
 # ===================================================================
+class StatusDot(Widget):
+    """Маленький кружок: жёлтый — первая карточка нарисована, зелёный — нарисованы все."""
+    def __init__(self, **kw):
+        super().__init__(size_hint=(None, None), size=(dp(14), dp(14)), pos_hint={'top': 1}, **kw)
+        self.rgba = None
+        self.bind(pos=self._draw, size=self._draw)
+
+    def set(self, state):
+        self.rgba = {'yellow': (1, 0.85, 0, 1), 'green': (0.2, 0.75, 0.3, 1)}.get(state)
+        self._draw()
+
+    def _draw(self, *a):
+        self.canvas.clear()
+        if self.rgba:
+            with self.canvas:
+                Color(*self.rgba)
+                from kivy.graphics import Ellipse
+                Ellipse(pos=self.pos, size=self.size)
+
+
 class SearchScreen(Screen):
     def __init__(self, app, reading=False, **kw):
         super().__init__(name='read' if reading else 'search', **kw)
@@ -314,6 +341,8 @@ class SearchScreen(Screen):
         self._cards = []                 # их виджеты
         self._more_btn = None
         self._widgets = {}               # ключ -> виджеты-куски текста
+        self.native = None               # NativeList (родная отрисовка) или None
+        self._native_on = app.native_wanted()
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
         self.input = no_bubble(TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
@@ -351,14 +380,106 @@ class SearchScreen(Screen):
         if not reading:
             root.add_widget(top)
         self.status_slot.add_widget(self.status)
-        root.add_widget(self.status_slot)
+        self.dot = StatusDot()
+        dot_col = BoxLayout(size_hint=(None, 1), width=dp(18), padding=(dp(2), dp(4), 0, 0))
+        dot_col.add_widget(self.dot)
+        status_row = BoxLayout(size_hint_y=None)
+        status_row.add_widget(self.status_slot)
+        status_row.add_widget(dot_col)
+        self.status_slot.bind(height=lambda w, h: setattr(status_row, 'height', h))
+        status_row.height = self.status_slot.height
+        root.add_widget(status_row)
         self.undo_btn = Button(text='Отменить выделение', size_hint_y=None, height=dp(37), background_normal='',
                                background_color=ACCENT, color=(1, 1, 1, 1), font_size=sp(16))
         self.undo_btn.bind(on_release=lambda *_: self.app.undo_mark())
         top.bind(height=lambda w, h: setattr(self.undo_btn, 'height', h * 2 / 3))   # 2/3 высоты кнопки «Поиск»
         self.undo_btn.height = top.height * 2 / 3
-        root.add_widget(self.sv)
+        if self._native_on:
+            self.holder = Widget()                       # место под WebView: он лежит поверх этого виджета
+            root.add_widget(self.holder)
+        else:
+            root.add_widget(self.sv)
         self.add_widget(root)
+
+    # ---------- родная отрисовка (WebView) ----------
+    def _nl(self):
+        if self.native is None:
+            t = THEMES.get(self.ctl.config.get('theme', 'day'), THEMES['day'])
+            self.native = nativeview.NativeList(htmlview.page_html(t, self.ctl.config.get_int('font_size', 16)),
+                                                self._on_native, t['BG'][:3])
+            self._tick_ev = Clock.schedule_interval(self._tick, 0.15)
+        return self.native
+
+    def _tick(self, dt):
+        nl = self.native
+        if nl is None:
+            return
+        h = self.holder
+        x, y = h.to_window(h.x, h.y)
+        top = Window.height - (y + h.height)
+        app = self.app
+        shown = (self.manager is not None and self.manager.current == self.name and app.root is app.ready_root
+                 and not getattr(app, '_locked', False)
+                 and not any(isinstance(c, ModalView) for c in Window.children))
+        nl.sync((x, top, h.width, h.height), shown and h.width > 10 and h.height > 10)
+        nl.poll()
+
+    def destroy(self):
+        """Перед пересозданием интерфейса: WebView — родной объект Android, сам не исчезнет."""
+        if self.native is not None:
+            self._tick_ev.cancel()
+            self.native.destroy()
+            self.native = None
+
+    def _expand_on(self):
+        return self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading
+
+    def _on_native(self, events):
+        ctl = self.ctl
+        for e in events:
+            t = e.get('t')
+            if t == 'select':
+                key = e['key']
+                card = ctl.card_dict(key)
+                if card is None:
+                    continue
+                text = card['text'][e['s']:e['e']].strip()
+                result = ctl.toggle_mark(key, e['s'], e['e'], text)
+                self.refresh_card(key)
+                if result == 'marked':
+                    ctl.on_status('Подчёркнуто и записано в конспект')
+                elif result == 'unmarked':
+                    ctl.on_status('Подчёркивание снято')
+            elif t == 'more':
+                ctl.show_more()
+            elif t == 'expand':
+                ctl.toggle_expand(e['key'])
+
+    def refresh_card(self, key):
+        """Точечная перерисовка одной карточки в WebView."""
+        if self.native is None or key not in self._keys:
+            return
+        card = self.ctl.card_dict(key)
+        if card is not None:
+            self.native.call(htmlview.js_call('updateCard', key, htmlview.card_html(card, self._expand_on())))
+
+    def _show_native(self, cards, total, more, incremental, ev, fresh, t0):
+        nl = self._nl()
+        ctl = self.ctl
+        exp = self._expand_on()
+        if incremental:
+            new = ev['new']
+            nl.call(htmlview.js_call('appendCards', ''.join(htmlview.card_html(c, exp) for c in cards[len(cards) - new:]),
+                                     ev['drop']))
+        else:
+            nl.call(htmlview.js_call('setCards', ''.join(htmlview.card_html(c, exp) for c in cards)))
+            if fresh or not self.reading_screen:
+                nl.call(htmlview.js_call('scrollTop'))
+        nl.call(htmlview.js_call('setMore', ctl.more_label if more else ''))
+        self._keys = [c['key'] for c in cards]
+        built = (time.time() - t0) * 1000
+        self._suffix = f" · отправлено в WebView: {built:.0f} мс"
+        self.status.text = escape_markup(self._base + self._suffix)
 
     def set_undo(self, visible):
         """После выделения вместо строки состояния — кнопка «Отменить выделение»."""
@@ -370,7 +491,7 @@ class SearchScreen(Screen):
         self.ctl.submit_query(self.input.text)
 
     def set_status(self, text):
-        if not text.startswith('Найдено'):
+        if not text.startswith('Запрос'):
             self._suffix = ''
         self._base = text
         self.status.text = escape_markup(text + self._suffix)
@@ -380,6 +501,7 @@ class SearchScreen(Screen):
            читает первые, дорисовываются следующие (экран не ждёт, пока будет готово всё)."""
         t0 = time.time()
         self._suffix = ''
+        self.dot.set(None)
         ctl = self.ctl
         self._tok += 1
         tok = self._tok
@@ -390,6 +512,9 @@ class SearchScreen(Screen):
         incremental = bool(ev and self._keys and keys[:len(self._keys) - ev['drop']] == self._keys[ev['drop']:])
         if not incremental and any(c.get('stub') for c in cards):
             cards = ctl.full_cards()                       # заглушки годятся только для дорисовки
+        if self._native_on:
+            self._show_native(cards, total, more, incremental, ev, fresh, t0)
+            return
         shift = 0
         if incremental:
             drop, new = ev['drop'], ev['new']
@@ -424,6 +549,7 @@ class SearchScreen(Screen):
             elif not cards and not self.reading_screen and ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
             built = (time.time() - t0) * 1000
+            self.dot.set('green')
             self._suffix = f" · первая карточка: {first['ms'] or built:.0f} мс, все: {built:.0f} мс"
             self.status.text = escape_markup(self._base + self._suffix)
 
@@ -436,6 +562,7 @@ class SearchScreen(Screen):
                 self.box.add_widget(w)
                 if first['ms'] is None:
                     first['ms'] = (time.time() - t0) * 1000
+                    self.dot.set('yellow')
             if todo:
                 Clock.schedule_once(step, 0)
             else:
@@ -444,6 +571,14 @@ class SearchScreen(Screen):
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
+        self.dot.set(None)
+        if self._native_on:
+            self._keys = []
+            if self.native is not None:
+                self.native.call(htmlview.js_call('setCards', ''))
+                self.native.call(htmlview.js_call('setMore', ''))
+                self.native.call(htmlview.js_call('setFont', self.ctl.config.get_int('font_size', 16)))
+            return
         self.box.clear_widgets()
         self._keys, self._cards, self._widgets, self._more_btn = [], [], {}, None
 
@@ -803,10 +938,40 @@ class SettingsScreen(Screen):
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
             lambda v: (self.ctl.set_setting('index_auto', v), self.ctl.rescan() if v else None)))
+        if nativeview.available():
+            self.set_box.add_widget(mlabel('Отрисовка текста (после смены — перезапуск)'))
+            self.set_box.add_widget(segmented(
+                [('Стандартная', 'kivy'), ('Родная (WebView)', 'native')], self.ctl.config.get('render', 'kivy'),
+                lambda v: (self.ctl.set_setting('render', v), self.ctl.on_status('Отрисовка изменена: перезапустите приложение'))))
+            self._extra = 1
+        else:
+            self._extra = 0
+        extra_btn = 0
+        if safsync.available():
+            uri = self.ctl.sync_uri()
+            name = ''
+            if uri:
+                try:
+                    name = safsync.SafFolder(uri).label()
+                except Exception:
+                    name = '?'
+            self.set_box.add_widget(btn('Папка синхронизации' + (f': {name}' if name else '…'), self.pick_sync, color=GRAY))
+            self.set_box.add_widget(btn('Синхронизировать', self.ctl.sync_now, color=ACCENT if uri else GRAY))
+            extra_btn = 2
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
         self.set_box.add_widget(btn('Пароль', self.app.open_password, color=GRAY))
-        self.set_box.height = dp(26) * 2 + dp(44) * 4 + dp(6) * 5
+        n = 2 + self._extra
+        self.set_box.height = dp(26) * n + dp(44) * (4 + self._extra + extra_btn) + dp(6) * (5 + 2 * self._extra + extra_btn)
         self.set_btn.text = 'Настройки ▴'
+
+    def pick_sync(self):
+        def got(uri):
+            self.ctl.set_setting('sync_uri', uri)
+            self.ctl.on_status("Папка синхронизации выбрана. Нажмите «Синхронизировать».")
+            if self.set_box.children:                      # обновить подпись кнопки
+                self.toggle_settings()
+                self.toggle_settings()
+        safsync.pick_folder(got, self.ctl.on_status)
 
     def font(self, delta):
         self.font_label.text = f"Размер шрифта: {self.app.change_font(delta)}"
@@ -876,10 +1041,12 @@ class SinevaApp(App):
         apply_theme(name)
         cur, query = self.sm.current, self.search_s.input.text
         old = self.root
+        for scr in (self.search_s, self.read_s):
+            scr.destroy()
         new = self._make_root()
         Window.remove_widget(old)
         Window.add_widget(new)
-        self.root = new
+        self.root = self.ready_root = new
         self.search_s.input.text = query
         self.sm.current = cur
         self.ctl.publish_books()
@@ -924,9 +1091,14 @@ class SinevaApp(App):
             b.background_color = ACCENT if n == name else NAV
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
 
+    def native_wanted(self):
+        return nativeview.available() and self.ctl.config.get('render', 'kivy') == 'native'
+
     def undo_mark(self):
         key = self.ctl.undo_last_mark()
         if key:
+            for scr in (self.search_s, self.read_s):
+                scr.refresh_card(key)
             for scr in (self.search_s, self.read_s):
                 for w in scr._widgets.get(key, []):
                     off = w.card.get('offset', 0)
@@ -934,6 +1106,8 @@ class SinevaApp(App):
                     w.refresh()
 
     def go_tab(self, name):
+        if self.sm.current != name:
+            self._prev_tab = self.sm.current if self.sm.current != 'read' else getattr(self, '_prev_tab', 'search')
         self.sm.current = name                              # экран открывается сразу,
         if name in ('search', 'read'):                      # а содержимое готовится уже после его отрисовки
             Clock.schedule_once(lambda dt: self.ctl.set_tab(name), 0)
@@ -1055,6 +1229,8 @@ class SinevaApp(App):
         pop = top_popup('Режим чтения', box, dp(200))
         row.add_widget(btn('Продолжить', lambda: (pop.dismiss(), cont())))
         row.add_widget(btn('С начала', lambda: (pop.dismiss(), start()), color=GRAY))
+        row.add_widget(btn('Отмена', lambda: (pop.dismiss(), self.go_tab(getattr(self, '_prev_tab', 'search') or 'search')),
+                           color=GRAY))
         box.add_widget(row)
         pop.open()
 
@@ -1077,7 +1253,8 @@ class SinevaApp(App):
         remembered = ctl.append_target()
         first = next((k for k, v in names.items() if v == remembered), next(iter(names)))
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
-        spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14))
+        spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14),
+                       background_normal='', background_color=BTN2, color=BTN2_TXT)
         last = ReadBox(to_end=False, size_hint_y=0.4)
         text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
                          size_hint_y=0.6, font_size=sp(16))

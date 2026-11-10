@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional
 
 from . import marks as marks_mod
 from . import notes
+from . import syncmerge
 from .config import AppConfig
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
@@ -261,7 +262,7 @@ class Controller:
             self.on_status('; '.join(outcome.errors))
         else:
             mode = '/'.join(sorted(outcome.modes)) or '—'
-            self.on_status(f"Найдено топиков: {visible} · поиск {outcome.elapsed_ms:.0f} мс "
+            self.on_status(f"Запрос '{self.query.strip()}', найдено блоков: {visible} · поиск {outcome.elapsed_ms:.0f} мс "
                            f"(индекс {outcome.index_ms:.0f} мс, {mode})"
                            + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
 
@@ -376,6 +377,15 @@ class Controller:
         for it in self.outcome.results:
             if f"{it['book']}:{it['rowid']}" == key:
                 return it
+        return None
+
+    def card_dict(self, key: str):
+        """Свежая карточка одного показанного топика (для точечного обновления в родном рендерере)."""
+        for i, it in enumerate(self.outcome.results):
+            if f"{it['book']}:{it['rowid']}" == key and it.get('content') is not None:
+                brief = self.config.get_bool('brief_view', False) and not self.reading
+                expanded = key in self.expanded
+                return self._card(i, key, it, brief and not expanded, expanded)
         return None
 
     def _segments(self, key: str, item: dict):
@@ -833,6 +843,53 @@ class Controller:
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode if mode in ('text', 'vector') else 'text'
+
+    # ================= синхронизация с папкой (Google Диск) =================
+    def sync_uri(self) -> str:
+        return self.config.get('sync_uri', '')
+
+    def sync_now(self, folder=None) -> None:
+        """Ручная синхронизация подчёркиваний, конспекта и дневника с папкой. folder — для тестов (DirFolder)."""
+        if folder is None:
+            uri = self.sync_uri()
+            if not uri:
+                self.on_status("Сначала выберите папку синхронизации")
+                return
+            try:
+                from .ui.safsync import SafFolder
+                folder = SafFolder(uri)
+            except Exception as e:
+                self.on_status(f"Папка синхронизации недоступна: {e}")
+                return
+        if getattr(self, '_syncing', False):
+            return
+        self._syncing = True
+        self.on_status("Синхронизация…")
+        files = {'0_Конспект.txt': self.paths.conspect_path, 'dnev.txt': self.paths.diary_path}
+
+        def work():
+            try:
+                rep = syncmerge.sync_all(folder, self.marks, files, os.path.join(self.paths.root, 'sync_base'))
+                err = None
+            except Exception as e:
+                rep, err = None, e
+
+            def done():
+                self._syncing = False
+                if err is not None:
+                    self.on_status(f"Синхронизация не удалась: {err}")
+                    return
+                if rep['marks_added'] or rep['marks_removed']:
+                    self.reset_views()                          # карточки на экране устарели
+                if rep['texts_changed']:
+                    self.library.scan()
+                    self.publish_books()
+                    if 'dnev.txt' in rep['texts_changed']:
+                        self.maybe_index(['dnev.txt'])
+                self.on_status(f"Синхронизация готова: подчёркиваний +{rep['marks_added']}, −{rep['marks_removed']}; "
+                               f"файлов обновлено здесь: {len(rep['texts_changed'])}, в папке: {len(rep['texts_pushed'])}")
+            self.ui_post(done)
+        self._run(work)
 
     # ================= служебное =================
     def _run(self, fn: Callable) -> None:
