@@ -147,3 +147,13 @@ app2.undo_mark()
 app2.search_s._on_native([{'t': 'more'}, {'t': 'expand', 'key': key}])
 app2.search_s.clear(); app2.search_s.destroy(); app2.read_s.destroy()
 print('native smoke OK, вызовов JS:', len(calls))
+
+# ---- окно «Синхронизация»
+app2.sync_dialog('start', 'Идёт…')
+assert app2._sync_pop is not None and app2._sync_parts[2].disabled
+app2.sync_dialog('done', 'Готово')
+assert not app2._sync_parts[2].disabled and app2._sync_parts[0].text == 'Готово'
+assert app2._on_key(None, 27) is True
+app2._sync_close()
+assert app2._sync_pop is None
+print('sync dialog OK')

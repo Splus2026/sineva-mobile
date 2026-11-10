@@ -555,5 +555,33 @@ try:
 finally:
     shutil.rmtree(_t, ignore_errors=True)
 
+# ---- переустановка: пустые дневник и подчёркивания не затирают накопленное в папке
+_t2 = tempfile.mkdtemp()
+try:
+    _fold2 = _sm.DirFolder(os.path.join(_t2, 'drive')); os.makedirs(_fold2.path)
+    _old = _mk.MarksStore(os.path.join(_t2, 'old.db')); _old.add_mark('x.txt', 'вера', 'a ', ' b')
+    _od, _ok = os.path.join(_t2, 'od.txt'), os.path.join(_t2, 'ok.txt')
+    open(_od, 'wb').write('запись 1\nзапись 2\n'.encode()); open(_ok, 'wb').write('.......цитата\n(x)\n'.encode())
+    _sm.sync_all(_fold2, _old, {'dnev.txt': _od, '0_Конспект.txt': _ok}, os.path.join(_t2, 'b0'))
+    _new = _mk.MarksStore(os.path.join(_t2, 'new.db'))
+    _nd, _nk = os.path.join(_t2, 'nd.txt'), os.path.join(_t2, 'nk.txt')
+    open(_nd, 'wb').close()                                   # после установки созданы пустые файлы
+    _sm.sync_all(_fold2, _new, {'dnev.txt': _nd, '0_Конспект.txt': _nk}, os.path.join(_t2, 'b1'))
+    check('переустановка: пустые файлы приняли данные из папки',
+          open(_nd, 'rb').read() == open(_od, 'rb').read() and open(_nk, 'rb').read() == open(_ok, 'rb').read()
+          and [m.fragment for m in _new.all_marks()] == ['вера'])
+    check('переустановка: файлы в папке не обнулены',
+          _fold2.read('dnev.txt') == open(_od, 'rb').read() and '"вера"'.encode() in _fold2.read('sineva_marks.json'))
+    # обратное: пустое устройство синхронизируется ещё раз — всё так же цело
+    _sm.sync_all(_fold2, _new, {'dnev.txt': _nd, '0_Конспект.txt': _nk}, os.path.join(_t2, 'b1'))
+    check('повторная синхронизация ничего не теряет', _fold2.read('dnev.txt') == open(_od, 'rb').read())
+    # пустой файл в папке (остался от сбоя) не мешает: берётся локальное
+    _fold2.write('dnev.txt', b'')
+    _sm.sync_all(_fold2, _new, {'dnev.txt': _nd}, os.path.join(_t2, 'b1'))
+    check('пустой файл в папке заполняется локальным', _fold2.read('dnev.txt') == open(_nd, 'rb').read() != b'')
+    _old.close(); _new.close()
+finally:
+    shutil.rmtree(_t2, ignore_errors=True)
+
 print(f"Проверок: {TOTAL}, провалено: {len(FAILED)}")
 sys.exit(1 if FAILED else 0)

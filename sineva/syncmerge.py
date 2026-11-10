@@ -166,6 +166,8 @@ def sync_all(folder, marks_store, local_files: Dict[str, str], base_dir: str, lo
         if base is None and local and remote and local != remote:
             base = b''                                       # первая синхронизация: оба файла считаются «дописанными»
         merged, need_bak = merge_text(local, remote, base)
+        if not merged:
+            continue                                         # пустым ничего не затираем ни здесь, ни в папке
         if need_bak:
             if local:
                 with open(os.path.join(base_dir, name + '.local.bak'), 'wb') as f:

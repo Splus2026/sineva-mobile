@@ -987,6 +987,7 @@ class SinevaApp(App):
     def build(self):
         """Сначала показывается заставка (слово собирается из пикселей), интерфейс создаётся за ней."""
         self.ready_root = None
+        self._sync_pop = None
         self.splash = Splash(on_done=self._swap)
         Clock.schedule_once(self._init_app, 0.3)
         return self.splash
@@ -1069,6 +1070,7 @@ class SinevaApp(App):
         c.on_progress = self.books_s.show_progress
         c.on_reset = lambda: (self.search_s.clear(), self.read_s.clear())
         c.on_undo = lambda n: (self.search_s.set_undo(n > 0), self.read_s.set_undo(n > 0))
+        c.on_sync = self.sync_dialog
         c.on_ask_continue = self.ask_continue
 
         root = BoxLayout(orientation='vertical')
@@ -1220,6 +1222,40 @@ class SinevaApp(App):
         row.add_widget(btn('Остаться', pop.dismiss, color=GRAY))
         box.add_widget(row)
         pop.open()
+
+    def sync_dialog(self, state, text):
+        """Окно «Синхронизация»: пока идёт обмен — крутится индикатор, закрыть нельзя; по окончании — итог и кнопка «Готово»."""
+        pop = self._sync_pop
+        if state == 'start':
+            if pop is not None:
+                return
+            box = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
+            lab = Label(text=text, font_size=sp(16), halign='center', valign='middle')
+            lab.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], None)))
+            bar = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(8))
+            ok = btn('Готово', lambda: self._sync_close(), color=GRAY)
+            ok.disabled = True
+            for w in (lab, bar, ok):
+                box.add_widget(w)
+            pop = top_popup('Синхронизация', box, dp(240))
+            pop.open()
+            self._sync_pop, self._sync_parts = pop, (lab, bar, ok)
+            ev = Clock.schedule_interval(lambda dt: setattr(bar, 'value', (bar.value + 6) % 100), 0.1)
+            self._sync_anim = ev
+            return
+        if pop is None:
+            return
+        lab, bar, ok = self._sync_parts
+        self._sync_anim.cancel()
+        bar.value = 100 if state == 'done' else 0
+        lab.text = text
+        ok.disabled = False
+        ok.background_color = ACCENT
+
+    def _sync_close(self):
+        pop, self._sync_pop = self._sync_pop, None
+        if pop is not None:
+            pop.dismiss()
 
     def ask_continue(self, book, number, cont, start):
         box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
@@ -1374,6 +1410,8 @@ class SinevaApp(App):
         show_tail()
 
     def _on_key(self, window, key, *a):
+        if key == 27 and self._sync_pop is not None:
+            return True                                     # во время и сразу после синхронизации «Назад» не действует
         if key == 27:                                       # «Назад»
             if getattr(self, '_locked', False):
                 return True

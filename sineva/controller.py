@@ -63,6 +63,7 @@ class Controller:
         self.win_start = 0                      # индекс первой показанной карточки (окно ≤ WINDOW карточек)
         self.pending_append = None              # {'drop': n, 'new': m} — «Показать ещё»: интерфейс дорисовывает, а не перестраивает
         self.reading = None                     # режим чтения: {'book','last','has_next','total'}
+        self.on_sync = None                     # (состояние 'start'|'done'|'error', текст) — окно «Синхронизация»
         self.on_ask_continue = None             # (название книги, номер блока, продолжить(), с_начала())
         self._indexing_names = set()
 
@@ -860,11 +861,15 @@ class Controller:
                 folder = SafFolder(uri)
             except Exception as e:
                 self.on_status(f"Папка синхронизации недоступна: {e}")
+                if self.on_sync:
+                    self.on_sync('error', f"Папка синхронизации недоступна:\n{e}")
                 return
         if getattr(self, '_syncing', False):
             return
         self._syncing = True
         self.on_status("Синхронизация…")
+        if self.on_sync:
+            self.on_sync('start', "Идёт синхронизация…\nПодождите, не закрывайте приложение.")
         files = {'0_Конспект.txt': self.paths.conspect_path, 'dnev.txt': self.paths.diary_path}
 
         def work():
@@ -878,6 +883,8 @@ class Controller:
                 self._syncing = False
                 if err is not None:
                     self.on_status(f"Синхронизация не удалась: {err}")
+                    if self.on_sync:
+                        self.on_sync('error', f"Синхронизация не удалась:\n{err}")
                     return
                 if rep['marks_added'] or rep['marks_removed']:
                     self.reset_views()                          # карточки на экране устарели
@@ -886,8 +893,11 @@ class Controller:
                     self.publish_books()
                     if 'dnev.txt' in rep['texts_changed']:
                         self.maybe_index(['dnev.txt'])
-                self.on_status(f"Синхронизация готова: подчёркиваний +{rep['marks_added']}, −{rep['marks_removed']}; "
-                               f"файлов обновлено здесь: {len(rep['texts_changed'])}, в папке: {len(rep['texts_pushed'])}")
+                msg = (f"Синхронизация завершена.\nПодчёркиваний: +{rep['marks_added']}, −{rep['marks_removed']}\n"
+                       f"Файлов обновлено на телефоне: {len(rep['texts_changed'])}, в папке: {len(rep['texts_pushed'])}")
+                self.on_status(msg.replace('\n', ' · '))
+                if self.on_sync:
+                    self.on_sync('done', msg)
             self.ui_post(done)
         self._run(work)
 
