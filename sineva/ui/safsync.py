@@ -52,11 +52,18 @@ class SafFolder:
         self.root_doc = self.DC.buildDocumentUriUsingTree(self.tree, self.root_id)
 
     def label(self) -> str:
-        """Понятное имя папки для показа в настройках."""
+        """Имя папки для показа в настройках (у Google Диска идентификатор длинный — берём отображаемое имя)."""
         try:
-            return self.root_id.split(':', 1)[-1] or self.root_id
+            cur = self.resolver.query(self.root_doc, ['_display_name'], None, None, None)
+            try:
+                if cur is not None and cur.moveToFirst() and cur.getString(0):
+                    return cur.getString(0)
+            finally:
+                if cur is not None:
+                    cur.close()
         except Exception:
-            return str(self.tree)
+            pass
+        return 'выбрана'
 
     def _find(self, name: str):
         children = self.DC.buildChildDocumentsUriUsingTree(self.tree, self.root_id)
@@ -78,8 +85,12 @@ class SafFolder:
         pfd = self.resolver.openFileDescriptor(uri, 'r')
         if pfd is None:
             raise RuntimeError(f"{name}: нет доступа (файл в облаке? откройте его в приложении «Диск»)")
-        with os.fdopen(pfd.detachFd(), 'rb') as f:
-            return f.read()
+        try:
+            fd = os.dup(pfd.getFd())
+            with os.fdopen(fd, 'rb') as f:
+                return f.read()
+        finally:
+            pfd.close()
 
     def write(self, name: str, data: bytes) -> None:
         uri = self._find(name)
@@ -88,13 +99,16 @@ class SafFolder:
             uri = self.DC.createDocument(self.resolver, self.root_doc, mime, name)
             if uri is None:
                 raise RuntimeError(f"не удалось создать {name}")
+        # Поток обязательно закрывается штатно (close): только так поставщик (Google Диск) узнаёт, что запись окончена
+        out = self.resolver.openOutputStream(uri, 'wt')
+        if out is None:
+            raise RuntimeError(f"{name}: нет доступа на запись")
         try:
-            pfd = self.resolver.openFileDescriptor(uri, 'wt')
-            with os.fdopen(pfd.detachFd(), 'wb') as f:
-                f.write(data)
-        except Exception:
-            out = self.resolver.openOutputStream(uri, 'wt')       # запасной путь для поставщиков без fd-записи
-            try:
-                out.write(bytearray(data))
-            finally:
-                out.close()
+            buf = bytearray(data)
+            step = 65536
+            for i in range(0, len(buf), step):
+                part = buf[i:i + step]
+                out.write(part, 0, len(part))
+            out.flush()
+        finally:
+            out.close()
