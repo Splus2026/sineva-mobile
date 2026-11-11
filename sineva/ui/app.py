@@ -558,6 +558,8 @@ class SearchScreen(Screen):
                 self.app.on_note_tap(int(e['nid']))
             elif t == 'more':
                 ctl.go(1)
+            elif t == 'err':
+                ctl.on_status('Ошибка страницы: ' + str(e.get('m', ''))[:160])
             elif t == 'swipe':
                 ctl.go(int(e.get('d', 1)))
             elif t == 'expand':
@@ -603,6 +605,12 @@ class SearchScreen(Screen):
         built = (time.time() - t0) * 1000
         self._suffix = f" · отправлено в WebView: {built:.0f} мс"
         self.status.text = escape_markup(self._base + self._suffix)
+
+        def shown_info(raw):                                  # что реально лежит на странице (для диагностики)
+            if tok == self._tok:
+                self._suffix += f" · на странице: {str(raw).strip(chr(34))}"
+                self.status.text = escape_markup(self._base + self._suffix)
+        Clock.schedule_once(lambda dt: nl.ask('window.SV&&window.SV.info()', shown_info), 0.4)
 
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""

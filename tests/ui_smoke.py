@@ -126,6 +126,7 @@ class FakeNL:
     def call(self, js): calls.append(js)
     def sync(self, g, v): pass
     def poll(self): pass
+    def ask(self, js, fn): pass
     def destroy(self): pass
 _nv.available = lambda: True
 _nv.NativeList = FakeNL

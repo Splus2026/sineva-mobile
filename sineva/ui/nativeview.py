@@ -124,7 +124,23 @@ class NativeList:
         if self.view is not None:
             self.view.evaluateJavascript(js, cb)
 
+    @run_on_ui_thread
+    def _invalidate(self):
+        """WebView лежит поверх поверхности Kivy и сам не всегда перерисовывается после смены содержимого —
+           без этого новый текст появляется лишь после касания экрана."""
+        if self.view is not None:
+            self.view.invalidate()
+            self.view.postInvalidateDelayed(60)
+
+    def ask(self, js, fn):
+        """Выполнить JS и получить результат: fn(строка) вызывается в потоке Kivy."""
+        from kivy.clock import Clock
+        cb = _ValueCallback(lambda raw: Clock.schedule_once(lambda dt: fn(raw), 0))
+        self._cbs = getattr(self, '_cbs', [])[-8:] + [cb]        # ссылка, чтобы Java-объект не удалился сборщиком
+        self._eval(js, cb)
+
     def call(self, js: str):
+        self._inval_until = time.time() + 1.5
         if self.ready:
             self._eval(js)
         else:
@@ -133,6 +149,8 @@ class NativeList:
     def poll(self):
         """Вызывать ~6 раз в секунду: забирает события страницы."""
         self._eval("window.SV?window.SV.take():null", self._cb)
+        if time.time() < getattr(self, '_inval_until', 0):
+            self._invalidate()                                  # после обновления текста принудительная перерисовка
 
     def _on_poll(self, raw):
         if not raw or raw == 'null':

@@ -193,6 +193,8 @@ window.SV={
   setFont:function(px,step){ document.getElementById('fs').textContent='.tx{font-size:'+px+'px}.bg{font-size:calc(1em + '+(step||2)+'px)}'; },
   setReadonly:function(v){ ro=!!v; },
   scrollTop:function(){ window.scrollTo(0,0); },
+  err:function(m){ ev.push({t:'err',m:String(m)}); },
+  info:function(){ var c=cards().firstElementChild; return c?(c.getAttribute('data-key')+' · '+c.textContent.length+' зн.'):'пусто'; },
   take:function(){ var r=JSON.stringify(ev); ev=[]; return r; }
 };
 })();
@@ -201,4 +203,5 @@ window.SV={
 
 def js_call(fn: str, *args) -> str:
     """Строка JS: SV.fn(args...), аргументы — JSON-литералы (кавычки и переводы строк экранированы)."""
-    return f"window.SV&&window.SV.{fn}({','.join(json.dumps(a, ensure_ascii=False) for a in args)});"
+    return (f"try{{window.SV&&window.SV.{fn}({','.join(json.dumps(a, ensure_ascii=False) for a in args)});}}"
+            f"catch(e){{window.SV&&window.SV.err('{fn}: '+e);}}")
