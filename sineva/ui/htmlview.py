@@ -136,7 +136,7 @@ body{padding:6px;font-family:sans-serif}
 .hd{font-size:14px;margin-bottom:4px}
 .tx{font-size:__FONT__px;line-height:1.35;white-space:pre-wrap;word-wrap:break-word;-webkit-user-select:none;user-select:none}
 .hl1{background:#FFFF99;color:__HLTXT__}.hl2{background:#FFFF00;color:__HLTXT__}
-.mk{color:__MARK__;text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:2px}
+.mk{color:__MARK__;box-shadow:inset 0 -3px 0 currentColor}   /* сплошная жирная линия, не рвётся на Ц Щ р Д */
 .hl1.mk,.hl2.mk{color:#0a2a8c}
 .sel{background:#9ec7ff;color:#000}
 .nt{font-style:italic}

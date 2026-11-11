@@ -405,7 +405,7 @@ class SearchScreen(Screen):
         self._native_on = app.native_wanted()
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
-        self.input = no_bubble(TextInput(hint_text='Введите слово (фрагмент)', multiline=False,
+        self.input = no_bubble(TextInput(hint_text='Введите слово', multiline=False,
                                font_size=sp(22), write_tab=False, background_normal='', background_active='',
                                background_color=INPUT_BG, foreground_color=TXT, cursor_color=TXT,
                                hint_text_color=(0.5, 0.52, 0.6, 1)))
@@ -1076,7 +1076,7 @@ class SettingsScreen(Screen):
                        self.ctl.reset_views(), self.app.refresh_actions(),
                        self.ctl.on_status("Вид текста изменён: повторите поиск или откройте «Чтение»"))))
         step = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self._step_label = mlabel(f"«+Шрифт»: на {self.ctl.font_step()}")
+        self._step_label = mlabel(f"Шрифт отметок: +{self.ctl.font_step()}")
         step.add_widget(self._step_label)
         step.add_widget(btn('−', lambda: self.step(-1), size_hint_x=None, width=dp(60)))
         step.add_widget(btn('+', lambda: self.step(1), size_hint_x=None, width=dp(60)))
@@ -1088,7 +1088,7 @@ class SettingsScreen(Screen):
         if nativeview.available():
             self.set_box.add_widget(mlabel('Отрисовка текста (после смены — перезапуск)'))
             self.set_box.add_widget(segmented(
-                [('Стандартная', 'kivy'), ('Родная (WebView)', 'native')], self.ctl.config.get('render', 'kivy'),
+                [('Стандартная', 'kivy'), ('Родная (WebView)', 'native')], self.ctl.config.get('render', 'native'),
                 lambda v: (self.ctl.set_setting('render', v), self.ctl.on_status('Отрисовка изменена: перезапустите приложение'))))
             self._extra = 1
         else:
@@ -1107,7 +1107,6 @@ class SettingsScreen(Screen):
             self.set_box.add_widget(btn('Архив папки синхронизации в «Загрузки»', self.app.archive_now,
                                         color=ACCENT if uri else GRAY))
             extra_btn = 3
-        self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
         self.set_box.add_widget(btn('Пароль', self.app.open_password, color=GRAY))
         self.set_btn.set_open(True)
         self.set_btn.background_color = ACCENT
@@ -1115,7 +1114,7 @@ class SettingsScreen(Screen):
     def step(self, delta):
         v = min(10, max(1, self.ctl.font_step() + delta))
         self.ctl.set_setting('font_step', v)
-        self._step_label.text = f"«+Шрифт»: на {v}"
+        self._step_label.text = f"Шрифт отметок: +{v}"
         self.ctl.reset_views()
         self.ctl.on_status('Шаг шрифта изменён: повторите поиск или откройте «Чтение»')
 
@@ -1251,7 +1250,7 @@ class SinevaApp(App):
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
 
     def native_wanted(self):
-        return nativeview.available() and self.ctl.config.get('render', 'kivy') == 'native'
+        return nativeview.available() and self.ctl.config.get('render', 'native') == 'native'
 
     # ---------- слои текста: подчёркивание, «+Шрифт», «+Цвет», «+Мысли» ----------
     cur_sel = None                  # последнее выделение: {'key', 's', 'e'} — в координатах текста карточки
@@ -1617,18 +1616,37 @@ class SinevaApp(App):
         if pop is not None:
             pop.dismiss()
 
-    def ask_continue(self, book, number, cont, start):
-        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
-        box.add_widget(Label(text="Продолжить предыдущее чтение книги?", font_size=sp(17),
-                             halign='center', valign='middle'))
+    def ask_continue(self, book, history, cont, start):
+        """Окно чтения: первые предложения последних прочитанных блоков (последний — снизу); «Продолжить» — с выбранного."""
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        state = {'sel': history[-1][0] if history else None}
+        listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+        listing.bind(minimum_height=listing.setter('height'))
+        sv = ScrollView()
+        sv.add_widget(listing)
+
+        def fill():
+            listing.clear_widgets()
+            for rowid, number, sentence in history:
+                chosen = rowid == state['sel']
+                b = Button(text=f"[b]{number}[/b]  {escape_markup(sentence)}", markup=True, halign='left', valign='middle',
+                           size_hint_y=None, height=dp(56), font_size=sp(14), background_normal='', color=(1, 1, 1, 1),
+                           background_color=ACCENT if chosen else (0.3, 0.32, 0.4, 1))
+                b.bind(size=lambda w, v: setattr(w, 'text_size', (v[0] - dp(12), v[1])))
+                b.bind(on_release=lambda *_a, r=rowid: (state.__setitem__('sel', r), fill()))
+                listing.add_widget(b)
+        fill()
+        box.add_widget(mlabel(f"«{escape_markup(book)}»: с какого блока продолжить?", color=(1, 1, 1, 1), font_size=sp(14)))
+        box.add_widget(sv)
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
-        pop = top_popup('Режим чтения', box, dp(200))
-        row.add_widget(btn('Продолжить', lambda: (pop.dismiss(), cont())))
+        pop = top_popup('Режим чтения', box, min(Window.height * 0.8, dp(150) + dp(60) * max(1, len(history))))
+        row.add_widget(btn('Продолжить', lambda: (pop.dismiss(), cont(state['sel']))))
         row.add_widget(btn('С начала', lambda: (pop.dismiss(), start()), color=GRAY))
         row.add_widget(btn('Отмена', lambda: (pop.dismiss(), self.go_tab(getattr(self, '_prev_tab', 'search') or 'search')),
                            color=GRAY))
         box.add_widget(row)
         pop.open()
+        Clock.schedule_once(lambda dt: setattr(sv, 'scroll_y', 0), 0.2)          # последний блок виден снизу
 
     # ---------- размер шрифта ----------
     def change_font(self, delta):
@@ -1672,11 +1690,12 @@ class SinevaApp(App):
             if not text.text.strip():
                 return
             if self.ctl.append_to_book(names[spin.text], text.text):
-                pop.dismiss()
+                text.text = ''                              # окно остаётся открытым: можно дописывать дальше
+                show_last()
 
         row.add_widget(btn('Добавить', add))
         row.add_widget(btn('CTR+V', paste, color=GRAY))
-        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (spin, last, row, text):                   # кнопки между окнами — клавиатура их не закроет
             box.add_widget(w)
         pop.open()
@@ -1760,11 +1779,12 @@ class SinevaApp(App):
 
         def add():
             if self.ctl.add_to_diary(text.text):
-                pop.dismiss()
+                text.text = ''                              # окно остаётся открытым
+                show_tail()
 
         row.add_widget(btn('Записать', add))
         row.add_widget(btn('CTR+V', paste, color=GRAY))
-        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (last, row, text):
             box.add_widget(w)
         pop.open()

@@ -429,14 +429,26 @@ try:
     rc2.on_status = lambda t: None
     rc2.selected = {'bibl.txt'}
     asked = {}
-    rc2.on_ask_continue = lambda name, n, cont, start: asked.update(n=n, cont=cont, start=start)
+    rc2.on_ask_continue = lambda name, hist, cont, start: asked.update(n=len(hist), hist=hist, cont=cont, start=start)
     rc2.set_tab('read')
-    check('прошлое место помнится: предложено продолжить', asked.get('n', 0) >= 3, str(asked))
+    check('прошлое место помнится: предложено продолжить', asked.get('n', 0) >= 1 and asked['hist'][-1][2], str(asked))
     asked['start']()
     check('«С начала» — блок 1', 'Блок 1' in rg2['cards'][0]['header'])
     rc2.set_tab('search'); rc2.reading = None; rc2._states.pop('read', None); rc2.set_tab('read')
-    asked['cont']()
+    asked['cont'](asked['hist'][-1][0])
     check('«Продолжить» — с последнего места', 'Блок' in rg2['cards'][0]['header'] and rg2['cards'][0]['header'] != '')
+    # лимит символов: большой блок — один; выбор книг изменился — результаты вкладки очищаются
+    rc4 = Controller(paths, run_async=False)
+    rc4.on_cards = lambda *a: None; msgs4 = []; rc4.on_status = msgs4.append
+    rc4.config.set('page_chars', 10)
+    check('лимит символов: минимум один блок', rc4._fit([500, 500, 500]) == 1 and rc4._fit([]) == 0)
+    rc4.config.set('page_chars', 6000)
+    check('лимит блоков: не больше page_size', rc4._fit([10] * 9) == rc4.config.get_int('page_size', 3) and rc4._fit([4000, 4000]) == 1, str(rc4.config.get_int('page_size', 3)))
+    rc4.selected = set(); rc4.selection_status()
+    check('статус без книг', 'Выберите книги' in msgs4[-1], msgs4[-1])
+    rc4.selected = {'bibl.txt'}; rc4.selection_status()
+    check('статус: алиас книги', 'Книги:' in msgs4[-1], msgs4[-1])
+    check('склонение', [rc4._books_word(n) for n in (4, 5, 21)] == ['книги', 'книг', 'книга'])
     # скользящее окно: после WINDOW карточек первые выгружаются
     rc3 = Controller(paths, run_async=False)
     rc3.on_cards = lambda *a: None; rc3.on_status = lambda t: None

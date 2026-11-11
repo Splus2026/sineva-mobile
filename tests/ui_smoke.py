@@ -186,6 +186,8 @@ c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(d))
 assert res and res[0][0] and sorted(saved[0]) == ['dnev.txt', 'sineva_marks.json'], res
 c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(_tf.mkdtemp())); assert not res[1][0]
 app2.sync_dialog('start', 'x'); app2.sync_dialog('done', 'ok'); app2.sync_dialog('start', 'a'); app2.sync_dialog('backup', 'b'); app2._sync_close()
+app2.ask_continue('Книга', [(1, 1, 'Первое.'), (2, 2, 'Второе.')], lambda r: None, lambda: None)
+app2.open_diary(); app2.open_append()
 print('native smoke OK, вызовов JS:', len(calls))
 
 # ---- окно «Синхронизация»

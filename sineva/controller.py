@@ -4,6 +4,7 @@
 проверяется тестами на ПК. Колбэки вызываются через ui_post — в Kivy это Clock.schedule_once, в тестах — вызов на месте.
 """
 import os
+import re
 import shutil
 import threading
 import time
@@ -64,7 +65,7 @@ class Controller:
         self.pending_append = None              # {'drop': n, 'new': m} — «Показать ещё»: интерфейс дорисовывает, а не перестраивает
         self.reading = None                     # режим чтения: {'book','last','has_next','total'}
         self.on_sync = None                     # (состояние 'start'|'done'|'error', текст) — окно «Синхронизация»
-        self.on_ask_continue = None             # (название книги, номер блока, продолжить(), с_начала())
+        self.on_ask_continue = None             # (название книги, [(rowid, номер, первое предложение)], продолжить(rowid), с_начала())
         self._indexing_names = set()
 
         # колбэки интерфейса
@@ -98,11 +99,17 @@ class Controller:
             self.selected.add(file_name)
         self._save_selected()
         self.publish_books()
+        self._sel_status()
 
     def select_all(self, value: bool) -> None:
         self.selected = {b.file_name for b in self.library.books if b.ready} if value else set()
         self._save_selected()
         self.publish_books()
+        self._sel_status()
+
+    def _sel_status(self) -> None:
+        if self.tab == 'search' and not self.outcome.results:
+            self.selection_status()
 
     def folder_sizes(self) -> dict:
         """Размеры папок в байтах: книги и индексы."""
@@ -249,12 +256,41 @@ class Controller:
                 self.ui_post(lambda: self._apply(outcome, token))
         self._run(work)
 
+    def _fit(self, lengths) -> int:
+        """Сколько блоков (из первых page_size) показать за раз: не больше page_size и page_chars символов
+           суммарно, но минимум один (большой блок выводится один; очень большой режется на части при рисовании)."""
+        limit = self.config.get_int('page_chars', 6000)
+        n = total = 0
+        for L in lengths[:self.config.get_int('page_size', 3)]:
+            if n and total + L > limit:
+                break
+            total += L
+            n += 1
+        return max(1, n) if lengths else 0
+
+    @staticmethod
+    def _books_word(n: int) -> str:
+        return 'книга' if n % 10 == 1 and n % 100 != 11 else ('книги' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'книг')
+
+    def selection_status(self) -> None:
+        """Статус до запроса: алиасы отобранных книг (не больше трёх, иначе «4 книги»)."""
+        books = self.selected_books()
+        if not books:
+            self.on_status("Выберите книги на вкладке «Книги»")
+        elif len(books) <= 3:
+            self.on_status("Книги: " + ', '.join(b.display for b in books) + " · введите слово и нажмите «Поиск»")
+        else:
+            self.on_status(f"Выбрано: {len(books)} {self._books_word(len(books))} · введите слово и нажмите «Поиск»")
+
     def _apply(self, outcome: SearchOutcome, token: int) -> None:
         if token != self._token:
             return
         self.outcome = outcome
-        self.shown = self.config.get_int('page_size', 3)
+        self.outcome_books = set(self.selected)
         self.win_start = 0
+        cand = self._items()[:self.config.get_int('page_size', 3)]
+        self.search.fill(cand)
+        self.shown = self._fit([len(it.get('content') or '') for it in cand])
         self.expanded.clear()
         self.offsets.clear()
         self._publish()
@@ -898,6 +934,15 @@ class Controller:
             self.offsets = st.get('offsets') or {}
             self.expanded = st.get('expanded') or set()
             self.reading = st.get('reading')
+        if tab == 'search':
+            if (self.outcome.results or self.outcome.query) and set(self.selected) != getattr(self, 'outcome_books', set(self.selected)):
+                self.outcome = SearchOutcome()                      # выбор книг изменился: старые результаты не показываем
+                self.shown = self.win_start = 0
+                self.offsets, self.expanded = {}, set()
+                self.pending_append = None
+                self.on_cards([], 0, False)
+            if not self.outcome.results:
+                self.selection_status()
         if tab == 'read':
             books = self.selected_books()
             same = self.reading and len(books) == 1 and books[0].file_name == self.reading['book']
@@ -931,13 +976,49 @@ class Controller:
             number = idx.ordinal(saved) if saved > first else 0
         finally:
             idx.close()
+        self.on_status(f"Чтение: «{book.display}»")
         if number > 1 and self.on_ask_continue:
-            self.on_ask_continue(book.display, number,
-                                 lambda: self._read_from(book, saved), lambda: self._read_from(book, first))
+            hist = self.read_history(book)
+            self.on_ask_continue(book.display, hist,
+                                 lambda rowid: self._read_from(book, rowid), lambda: self._read_from(book, first))
         elif number > 1:
             self._read_from(book, saved)
         else:
             self._read_from(book, first)
+
+    def _remember_read(self, file_name: str, rows) -> None:
+        """Последние 10 прочитанных блоков книги (rowid, от старых к новым) — для окна «Продолжить»."""
+        key = 'read_hist:' + file_name.replace('=', '_')
+        old = [int(x) for x in (self.config.get(key, '') or '').split(',') if x.strip().isdigit()]
+        ids = [r[0] for r in rows]
+        merged = [x for x in old if x not in ids] + ids
+        self.config.set(key, ','.join(str(x) for x in merged[-10:]))
+        self.config.save()
+
+    @staticmethod
+    def _first_sentence(text: str) -> str:
+        t = ' '.join((text or '').split())
+        m = re.match(r'(.+?[.!?…])(\s|$)', t)
+        out = m.group(1) if m else t
+        return out if len(out) <= 110 else out[:107].rstrip() + '…'
+
+    def read_history(self, book):
+        """[(rowid, номер блока, первое предложение)] последних прочитанных блоков, последний — в конце."""
+        key = 'read_hist:' + book.file_name.replace('=', '_')
+        ids = [int(x) for x in (self.config.get(key, '') or '').split(',') if x.strip().isdigit()]
+        try:
+            saved = int(self.config.get(self._read_key(book.file_name), '0') or 0)
+        except ValueError:
+            saved = 0
+        if saved and saved not in ids:
+            ids.append(saved)
+        ids = ids[-10:]
+        idx = BookIndex(book.index_path)
+        try:
+            data = idx.fetch(ids)
+            return [(i, idx.ordinal(i), self._first_sentence(data[i][0])) for i in ids if i in data]
+        finally:
+            idx.close()
 
     def _read_rows(self, book, start: int, step: int):
         idx = BookIndex(book.index_path)
@@ -962,6 +1043,9 @@ class Controller:
         if not rows:
             self.on_status("В книге нет блоков")
             return
+        k = self._fit([len(r[1]) for r in rows])
+        if k < len(rows):
+            rows, has_next = rows[:k], True
         outcome = SearchOutcome(query='')
         outcome.results = self._read_items(book, rows, base)
         self.outcome = outcome
@@ -970,6 +1054,7 @@ class Controller:
         self.expanded.clear()
         self.offsets.clear()
         self.set_setting(self._read_key(book.file_name), rows[-1][0])       # запоминается последнее прочитанное место
+        self._remember_read(book.file_name, rows)
         self._publish()
         self.on_status(f"Чтение: «{book.display}» · блоки с {base} из {total}")
 
@@ -984,6 +1069,9 @@ class Controller:
             r['has_next'] = False
             self._publish()
             return
+        k = self._fit([len(x[1]) for x in rows])
+        if k < len(rows):
+            rows, has_next = rows[:k], True
         results = self.outcome.results
         results.extend(self._read_items(book, rows, base))
         drop = max(0, len(results) - self.WINDOW)
@@ -992,6 +1080,7 @@ class Controller:
             del results[:drop]
         r['last'], r['has_next'] = rows[-1][0], has_next
         self.set_setting(self._read_key(book.file_name), rows[-1][0])
+        self._remember_read(book.file_name, rows)
         self.pending_append = {'drop': drop, 'new': len(rows)}
         self._publish()
         self.on_status(f"Чтение: «{book.display}» · блок {results[-1]['ordinal']} из {total}")
@@ -1003,7 +1092,9 @@ class Controller:
             return
         items = self._items()
         step = self.config.get_int('page_size', 3)
-        add = min(step, len(items) - (self.win_start + self.shown))
+        cand = items[self.win_start + self.shown:self.win_start + self.shown + step]
+        self.search.fill(cand)
+        add = self._fit([len(it.get('content') or '') for it in cand])
         if add <= 0:
             return
         drop = max(0, self.shown + add - self.WINDOW)
