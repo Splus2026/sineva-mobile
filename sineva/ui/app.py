@@ -617,11 +617,12 @@ class SearchScreen(Screen):
                 if want and not got.startswith(want + ' ') and tries[0] < 4:
                     tries[0] += 1
                     c2 = ctl.card_dict(want) or card
-                    nl.call(htmlview.js_call('setCards', htmlview.card_html(c2, exp)))
+                    def res(r, n=tries[0]):
+                        self._suffix += f" · повтор {n}: {str(r).strip(chr(34))[:80]}"
+                        self.status.text = escape_markup(self._base + self._suffix)
+                    nl.ask(htmlview.js_call('setCards', htmlview.card_html(c2, exp)), res)
                     nl.call(htmlview.js_call('scrollTop'))
-                    self._suffix = f" · повтор отправки {tries[0]}"
-                    self.status.text = escape_markup(self._base + self._suffix)
-                    Clock.schedule_once(check, 0.35)
+                    Clock.schedule_once(check, 0.5)
                     return
                 self._suffix += f" · на странице: {got}"
                 self.status.text = escape_markup(self._base + self._suffix)

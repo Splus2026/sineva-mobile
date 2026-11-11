@@ -521,7 +521,8 @@ check('html: кнопка Полностью', 'Полностью' in _h and '�
 _spans = [(int(a), int(b)) for a, b in _re.findall(r'data-a="(\d+)" data-b="(\d+)"', _h)]
 check('html: куски покрывают текст', bool(_spans) and _spans[0][0] == 0 and _spans[-1][1] == len(_c['text'])
       and all(_spans[i][1] == _spans[i + 1][0] for i in range(len(_spans) - 1)))
-check('html: js_call экранирует', 'setMore("a\\"b")' in htmlview.js_call('setMore', 'a"b'))
+import base64 as _b64
+check('html: js_call отдаёт строки в base64', 'D("%s")' % _b64.b64encode('a"b\u2028'.encode()).decode() in htmlview.js_call('setMore', 'a"b\u2028'))
 check('html: страница', 'setFont' in htmlview.page_html({'BG': (0, 0, 0, 1), 'CARD': (1, 1, 1, 1), 'BODY': (1, 1, 1, 1), 'ACCENT': (0, 0, 1, 1), 'MARK_COLOR': 'fff', 'HL_TEXT': ''}, 16))
 check('native: на ПК недоступен', nativeview.available() is False)
 

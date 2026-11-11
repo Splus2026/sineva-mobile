@@ -123,7 +123,9 @@ from sineva.ui import nativeview as _nv
 calls = []
 class FakeNL:
     def __init__(self, page, on_events, bg): self.on_events = on_events; self.view = 1
-    def call(self, js): calls.append(js)
+    def call(self, js):
+        import base64 as _b, re as _r, json as _j
+        calls.append(_r.sub(r'D\("([^"]*)"\)', lambda m: _j.dumps(_b.b64decode(m.group(1)).decode('utf-8'), ensure_ascii=False), js))
     def sync(self, g, v): pass
     def poll(self): pass
     def ask(self, js, fn): pass

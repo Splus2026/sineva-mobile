@@ -4,6 +4,7 @@
 выделение двумя касаниями (первое слово → последнее слово) обрабатывает JS и присылает событие {'t':'select',key,s,e}.
 События забирает Python опросом window.SV.take(); команды в страницу — через evaluateJavascript."""
 import html
+import base64
 import json
 import re
 from typing import Dict, List
@@ -175,6 +176,8 @@ document.addEventListener('touchend',function(e){
   var t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy;
   if(Math.abs(dx)>90 && Math.abs(dy)<60 && Math.abs(dx)>2*Math.abs(dy)){ swiped=Date.now(); ev.push({t:'swipe',d:dx<0?1:-1}); }
 },{passive:true});
+function D(b){ return decodeURIComponent(escape(atob(b))); }
+window.D=D;
 function cards(){ return document.getElementById('cards'); }
 window.SV={
   ready:true,
@@ -203,8 +206,10 @@ window.SV={
 
 def js_call(fn: str, *args) -> str:
     """Строка JS: SV.fn(args...), аргументы — JSON-литералы (кавычки и переводы строк экранированы)."""
-    # U+2028/2029/0085 внутри строкового литерала ломают разбор JS в старых WebView — вся команда молча пропадает
-    lit = ','.join(json.dumps(a, ensure_ascii=False) for a in args)
-    lit = lit.replace('\u2028', '\\u2028').replace('\u2029', '\\u2029').replace('\u0085', '\\u0085')
-    return (f"try{{window.SV&&window.SV.{fn}({lit});}}"
-            f"catch(e){{window.SV&&window.SV.err('{fn}: '+e);}}")
+    # Строки передаются как base64 (чистый ASCII): никакие символы текста не могут сломать разбор команды в WebView.
+    def lit(a):
+        if isinstance(a, str):
+            return 'D("%s")' % base64.b64encode(a.encode('utf-8')).decode('ascii')
+        return json.dumps(a)
+    return (f"(function(){{try{{window.SV.{fn}({','.join(lit(a) for a in args)});return 'ok';}}"
+            f"catch(e){{try{{window.SV.err('{fn}: '+e);}}catch(x){{}}return 'ERR '+e;}}}})()")
