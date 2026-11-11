@@ -2,6 +2,7 @@
 import os
 import time
 
+from kivy.animation import Animation
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
@@ -11,6 +12,7 @@ from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.popup import Popup
@@ -28,7 +30,7 @@ from ..search import escape_markup
 from .picker import add_home_shortcut, pick_files, publish_shared, share_file, save_to_downloads, is_android
 from . import textmodel
 from .splash import Splash
-from . import htmlview, nativeview, safsync
+from . import safsync
 from .textmodel import atom_at, build_markup, note_at_point
 
 THEMES = {
@@ -400,8 +402,7 @@ class SearchScreen(Screen):
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
-        self.native = None               # NativeList (родная отрисовка) или None
-        self._native_on = app.native_wanted()
+        self._last_pos = 0               # номер прежнего блока: по нему видно, в какую сторону перелистнули
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
         self.input = no_bubble(TextInput(hint_text='Введите слово', multiline=False,
@@ -460,11 +461,10 @@ class SearchScreen(Screen):
             self.actions.add_widget(b_)
         top.bind(height=lambda w, h: setattr(self.actions, 'height', h * 2 / 3))   # 2/3 высоты кнопки «Поиск»
         self.actions.height = top.height * 2 / 3
-        if self._native_on:
-            self.holder = Widget()                       # место под WebView: он лежит поверх этого виджета
-            root.add_widget(self.holder)
-        else:
-            root.add_widget(self.sv)
+        self.page = FloatLayout()                        # «страница»: при листании выезжает сбоку
+        self.sv.size_hint, self.sv.pos_hint = (1, 1), {'x': 0, 'y': 0}
+        self.page.add_widget(self.sv)
+        root.add_widget(self.page)
         # листание блоков: «Назад» — «N из M» — «Далее» (то же делает свайп влево/вправо)
         self.navbar = BoxLayout(size_hint_y=None, height=0, spacing=dp(4), opacity=0)
         self.nav_prev = Button(text='Назад', size_hint_x=0.3, background_normal='', background_color=BTN2,
@@ -489,7 +489,7 @@ class SearchScreen(Screen):
             b_.disabled = not flag
             b_.opacity = 1 if flag else 0.35
 
-    # листание свайпом (стандартная отрисовка; в WebView то же ловит страница)
+    # листание свайпом
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
             touch.ud['sw0'] = (touch.x, touch.y)
@@ -498,136 +498,24 @@ class SearchScreen(Screen):
     def on_touch_up(self, touch):
         start = touch.ud.get('sw0')
         res = super().on_touch_up(touch)
-        if start and not self._native_on and not touch.ud.get('pinch'):
+        if start and not touch.ud.get('pinch'):
             dx, dy = touch.x - start[0], touch.y - start[1]
             if abs(dx) > dp(90) and abs(dy) < dp(60) and abs(dx) > 2 * abs(dy):
                 self.ctl.go(1 if dx < 0 else -1)
         return res
 
-    # ---------- родная отрисовка (WebView) ----------
-    def _nl(self):
-        if self.native is None:
-            t = THEMES.get(self.ctl.config.get('theme', 'day'), THEMES['day'])
-            self.native = nativeview.NativeList(htmlview.page_html(t, self.ctl.config.get_int('font_size', 16), self.ctl.font_step()),
-                                                self._on_native, t['BG'][:3])
-            self._tick_ev = Clock.schedule_interval(self._tick, 0.15)
-        return self.native
-
-    def _tick(self, dt):
-        nl = self.native
-        if nl is None:
-            return
-        h = self.holder
-        x, y = h.to_window(h.x, h.y)
-        hh = h.height
-        # Страховка от устаревшей раскладки: список занимает всё место под строкой состояния
-        sr = self.status_row
-        floor = self.to_window(self.x, self.y)[1]
-        room = sr.to_window(sr.x, sr.y)[1] - floor
-        if room > dp(150) and hh < room * 0.6:
-            y, hh = floor, room
-        top = Window.height - (y + hh)
-        app = self.app
-        shown = (self.manager is not None and self.manager.current == self.name and app.root is app.ready_root
-                 and not getattr(app, '_locked', False)
-                 and not any(isinstance(c, ModalView) for c in Window.children))
-        nl.sync((x, top, h.width, hh), shown and h.width > 10 and hh > 10)
-        nl.poll()
+    def refresh_card(self, key):
+        """Слои карточки перерисовываются через refresh_layers."""
 
     def destroy(self):
-        """Перед пересозданием интерфейса: WebView — родной объект Android, сам не исчезнет."""
-        if self.native is not None:
-            self._tick_ev.cancel()
-            self.native.destroy()
-            self.native = None
+        pass
 
-    def _expand_on(self):
-        return self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading
-
-    def _on_native(self, events):
-        ctl = self.ctl
-        for e in events:
-            t = e.get('t')
-            if t == 'select':
-                card = ctl.card_dict(e['key'])
-                if card is not None:
-                    self.app.sel_done(e['key'], e['s'], e['e'], card['text'][e['s']:e['e']].strip())
-            elif t == 'anchor':
-                self.app.on_anchor(e['key'], e['s'], e['e'], None)
-            elif t == 'note':
-                self.app.on_note_tap(int(e['nid']))
-            elif t == 'more':
-                ctl.go(1)
-            elif t == 'err':
-                ctl.on_status('Ошибка страницы: ' + str(e.get('m', ''))[:160])
-            elif t == 'swipe':
-                ctl.go(int(e.get('d', 1)))
-            elif t == 'expand':
-                ctl.toggle_expand(e['key'])
-
-    def refresh_card(self, key):
-        """Точечная перерисовка одной карточки в WebView."""
-        if self.native is None or key not in self._keys:
-            return
-        card = self.ctl.card_dict(key)
-        if card is not None:
-            self.native.call(htmlview.js_call('updateCard', key, htmlview.card_html(card, self._expand_on())))
-
-    def _show_native(self, cards, nav, fresh, t0):
-        """Блок в WebView: сначала первая часть (то, что видно на экране) — жёлтый индикатор, затем весь текст — зелёный."""
-        nl = self._nl()
-        ctl = self.ctl
-        exp = self._expand_on()
-        nl.call(htmlview.js_call('setReadonly', ctl.marks_only()))
-        nl.call(htmlview.js_call('setMore', ''))
-        self._keys = [c['key'] for c in cards]
-        tok = self._tok
-        card = cards[0] if cards else None
-        if card is not None and len(card['text']) > 2500 and len(card['chunks']) > 1:
-            end = card['chunks'][0][1]
-            part = dict(card, text=card['text'][:end],
-                        hl=[(s_, min(e_, end), p_) for s_, e_, p_ in card['hl'] if s_ < end],
-                        **clip_layers(card, 0, end))
-            nl.call(htmlview.js_call('setCards', htmlview.card_html(part, exp)))
-            self.dot.set('yellow')
-
-            def full(dt):
-                if tok != self._tok or self.native is None:
-                    return
-                fresh_card = ctl.card_dict(card['key']) or card
-                nl.call(htmlview.js_call('updateCard', card['key'], htmlview.card_html(fresh_card, exp)))
-                self.dot.set('green')
-            Clock.schedule_once(full, 0.12)
-        else:
-            nl.call(htmlview.js_call('setCards', htmlview.card_html(card, exp) if card else ''))
-            self.dot.set('green' if card else None)
-        nl.call(htmlview.js_call('scrollTop'))
-        built = (time.time() - t0) * 1000
-        self._suffix = f" · отправлено в WebView: {built:.0f} мс"
-        self.status.text = escape_markup(self._base + self._suffix)
-
-        want = card['key'] if card else None
-        tries = [0]
-
-        def check(dt=0):
-            def shown_info(raw):                              # что реально лежит на странице; не то — шлём блок заново
-                if tok != self._tok or self.native is None:
-                    return
-                got = str(raw).strip(chr(34))
-                if want and not got.startswith(want + ' ') and tries[0] < 4:
-                    tries[0] += 1
-                    c2 = ctl.card_dict(want) or card
-                    def res(r, n=tries[0]):
-                        self._suffix += f" · повтор {n}: {str(r).strip(chr(34))[:80]}"
-                        self.status.text = escape_markup(self._base + self._suffix)
-                    nl.ask(htmlview.js_call('setCards', htmlview.card_html(c2, exp)), res)
-                    nl.call(htmlview.js_call('scrollTop'))
-                    Clock.schedule_once(check, 0.5)
-                    return
-                self._suffix += f" · на странице: {got}"
-                self.status.text = escape_markup(self._base + self._suffix)
-            nl.ask('window.SV&&window.SV.info()', shown_info)
-        Clock.schedule_once(check, 0.4)
+    def turn(self, direction):
+        """Эффект перелистывания: новая страница выезжает с края (вперёд — справа, назад — слева) и проявляется."""
+        Animation.cancel_all(self.sv)
+        self.sv.pos_hint = {'x': 0.45 * direction, 'y': 0}
+        self.sv.opacity = 0.0
+        Animation(pos_hint={'x': 0, 'y': 0}, opacity=1, d=0.28, t='out_cubic').start(self.sv)
 
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
@@ -660,10 +548,11 @@ class SearchScreen(Screen):
         if keys != self._keys:                               # другой блок: выделение прежнего больше не нужно
             self.app.cur_sel = None
             self.app.refresh_actions()
+        new_pos = nav['pos'] if nav else 0
+        direction = (1 if new_pos > self._last_pos else -1) if (cards and self._last_pos and new_pos and new_pos != self._last_pos
+                                                               and keys != self._keys) else 0
+        self._last_pos = new_pos
         self.update_nav(nav)
-        if self._native_on:
-            self._show_native(cards, nav, fresh, t0)
-            return
 
         def reset():
             self.box.clear_widgets()
@@ -686,25 +575,19 @@ class SearchScreen(Screen):
         w = self._card(cards[0], tok, done)
         self._cards.append(w)
         self.box.add_widget(w)
+        if direction:
+            self.turn(direction)
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
         self.dot.set(None)
         self.update_nav(None)
-        if self._native_on:
-            self._keys = []
-            if self.native is not None:
-                self.native.call(htmlview.js_call('setCards', ''))
-                self.native.call(htmlview.js_call('setMore', ''))
-                self.native.call(htmlview.js_call('setFont', self.ctl.config.get_int('font_size', 16), self.ctl.font_step()))
-            return
+        self._last_pos = 0
         self.box.clear_widgets()
         self._keys, self._cards, self._widgets = [], [], {}
 
     def reveal(self, key, pos):
         """Показать на экране место карточки key (позиция pos в её тексте): прокрутка, если оно вне видимой части."""
-        if self.native is not None or self._native_on:
-            return
         target = None
         for w in self._widgets.get(key, []):
             off = w.card.get('offset', 0)
@@ -1151,14 +1034,7 @@ class SettingsScreen(Screen):
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
             lambda v: (self.ctl.set_setting('index_auto', v), self.ctl.rescan() if v else None)))
-        if nativeview.available():
-            self.set_box.add_widget(mlabel('Отрисовка текста (после смены — перезапуск)'))
-            self.set_box.add_widget(segmented(
-                [('Стандартная', 'kivy'), ('Родная (WebView)', 'native')], self.ctl.config.get('render', 'native'),
-                lambda v: (self.ctl.set_setting('render', v), self.ctl.on_status('Отрисовка изменена: перезапустите приложение'))))
-            self._extra = 1
-        else:
-            self._extra = 0
+        self._extra = 0
         extra_btn = 0
         if safsync.available():
             uri = self.ctl.sync_uri()
@@ -1314,9 +1190,6 @@ class SinevaApp(App):
             b.background_color = ACCENT if n == name else NAV
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
 
-    def native_wanted(self):
-        return nativeview.available() and self.ctl.config.get('render', 'native') == 'native'
-
     # ---------- слои текста: подчёркивание, «+Шрифт», «+Цвет», «+Мысли» ----------
     cur_sel = None                  # последнее выделение: {'key', 's', 'e'} — в координатах текста карточки
     _undo_n = 0
@@ -1336,9 +1209,6 @@ class SinevaApp(App):
         for scr in (self.search_s, self.read_s):
             keys = [key] if key else list(scr._widgets) or list(getattr(scr, '_keys', []))
             for k in keys:
-                if scr.native is not None or scr._native_on:
-                    scr.refresh_card(k)
-                    continue
                 layers = self.ctl.card_layers(k)
                 for w in scr._widgets.get(k, []):
                     w.set_layers(layers, w.card.get('offset', 0))
@@ -1529,9 +1399,6 @@ class SinevaApp(App):
     def go_tab(self, name):
         if self.sm.current != name:
             self._prev_tab = self.sm.current if self.sm.current != 'read' else getattr(self, '_prev_tab', 'search')
-        for scr in (self.search_s, self.read_s):            # WebView других вкладок скрывается сразу
-            if scr.native is not None and scr.name != name:
-                scr.native.hide()
         self.sm.current = name                              # экран открывается сразу,
         if name in ('search', 'read'):                      # а содержимое готовится уже после его отрисовки
             Clock.schedule_once(lambda dt: self.ctl.set_tab(name), 0)

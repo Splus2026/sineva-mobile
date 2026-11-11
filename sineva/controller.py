@@ -36,10 +36,6 @@ class Controller:
            run_async=False           — всё синхронно (тесты)."""
         self.paths = paths or AppPaths()
         self.config = AppConfig(self.paths.config_path)
-        if self.config.get('render_default', '') != '2':        # однократно: родная отрисовка (WebView) — по умолчанию
-            self.config.set('render', 'native')
-            self.config.set('render_default', '2')
-            self.config.save()
         self.library = Library(self.paths, self.config)
         self.vectors = VectorRegistry(self.config, self.paths.vector_dir)
         self.search = SearchService(self.config, self.vectors)

@@ -34,10 +34,15 @@ class Clock:
 class _Clock2: pass
 class App(W):
     def run(self): pass
-mod('kivy'); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
+class Animation:
+    def __init__(self, **kw): pass
+    @staticmethod
+    def cancel_all(w): pass
+    def start(self, w): pass
+mod('kivy'); mod('kivy.animation', Animation=Animation); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
 mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None, remove_widget=lambda w: None, add_widget=lambda w: None))
 mod('kivy.metrics', dp=lambda x: x if isinstance(x, (int, float)) else 10, sp=lambda x: x)
-for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('label', 'Label'),
+for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('floatlayout', 'FloatLayout'), ('label', 'Label'),
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),
              ('spinner', 'Spinner'), ('switch', 'Switch'), ('textinput', 'TextInput')]:
     mod('kivy.uix.' + n, **{c: W})
@@ -116,55 +121,33 @@ app.books_s.on_pre_enter(); app.on_resume(); app.settings_s.add_shortcut()
 print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children),
       'подчёркнутых:', len(c.marks.all_marks()))
 
-from sineva.ui import htmlview as _hv
-def htmlview_card(ctl, k): return _hv.card_html(ctl.card_dict(k))
-# ---- родная отрисовка (WebView подменён заглушкой)
-from sineva.ui import nativeview as _nv
-calls = []
-class FakeNL:
-    def __init__(self, page, on_events, bg): self.on_events = on_events; self.view = 1
-    def call(self, js):
-        import base64 as _b, re as _r, json as _j
-        calls.append(_r.sub(r'D\("([^"]*)"\)', lambda m: _j.dumps(_b.b64decode(m.group(1)).decode('utf-8'), ensure_ascii=False), js))
-    def sync(self, g, v): pass
-    def poll(self): pass
-    def ask(self, js, fn): pass
-    def destroy(self): pass
-_nv.available = lambda: True
-_nv.NativeList = FakeNL
+# ---- стандартная отрисовка: выделение слова, слои, листание с анимацией
 app2 = SinevaApp()
 app2.build()
 for _ in range(120): app2.splash._tick(0.05)
 c2 = app2.ctl
 c2.run_async = False
-c2.set_setting('render', 'native')
 app2.root = object(); app2.set_theme('night'); app2.set_theme('day')
-assert app2.search_s._native_on
 app2.settings_s.toggle_settings(); app2.settings_s.toggle_settings()
 c2.index_books(['a.txt'])
 c2.submit_query('вера')
-assert any('setCards' in x and 'class=\\"card\\"' in x for x in calls), calls[:3]
 key = c2.outcome.results[0]['book'] + ':' + str(c2.outcome.results[0]['rowid'])
-app2.search_s._on_native([{'t': 'select', 'key': key, 's': 0, 'e': 4}])
-assert any('updateCard' in x for x in calls)
+app2.sel_done(key, 0, 4, 'Вера')
 assert len(c2.marks.all_marks()) >= 1
 app2.undo_mark()
-app2.search_s._on_native([{'t': 'more'}, {'t': 'expand', 'key': key}])
-app2.search_s.clear(); app2.search_s.destroy(); app2.read_s.destroy()
-# слои: шрифт/цвет/мысли/отмена через родной рендерер
-app2.search_s._on_native([{'t': 'anchor', 'key': key, 's': 0, 'e': 4}])
+app2.search_s.clear()
+app2.search_s.turn(1); app2.search_s.turn(-1)
+if len(c2.search.visible(c2.outcome)) > 1:
+    p0 = c2.nav['pos']; c2.go(1); assert c2.nav['pos'] == p0 + 1
+    c2.go(-1); assert c2.nav['pos'] == p0
+app2.on_anchor(key, 0, 4, None)
 assert app2.cur_sel and app2.cur_sel['key'] == key
-app2.search_s._on_native([{'t': 'select', 'key': key, 's': 0, 'e': 4}])          # уже подчёркнуто -> диалог
 app2.apply_style('big'); app2.apply_style('color')
-assert len(c2.marks.styles_for_file(next(iter({m.file_key for m in c2.marks.all_marks()})))) >= 1
 app2.cur_sel = {'key': key, 's': 0, 'e': 4}
 app2.open_note_editor()
 nid = c2.add_note(key, 0, 4, 'моя мысль')
-assert nid and 'nt' in calls[-1] or True
 app2.on_note_tap(nid); app2.open_note_editor(nid)
-app2.search_s._on_native([{'t': 'note', 'nid': nid}])
 c2.toggle_note_flag(nid, 'u'); c2.edit_note_text(nid, 'иначе')
-assert 'иначе' in htmlview_card(c2, key)
 before = len(c2.undo_stack)
 app2.undo_mark(); assert len(c2.undo_stack) == before - 1
 assert c2.export_notes()
@@ -176,8 +159,7 @@ k2 = c2.outcome.results[0]['book'] + ':' + str(c2.outcome.results[0]['rowid'])
 cd2 = c2.card_dict(k2); print('Отметки:', repr(cd2['text']))
 assert cd2['text'] == '(отметок нет)' or '…' in cd2['text'] or cd2['marks']
 assert c2.toggle_mark(k2, 0, 4, 'x') is None and c2.add_note(k2, 0, 4, 'z') is None
-app2.search_s._on_native([{'t': 'select', 'key': k2, 's': 0, 'e': 4}]); app2.apply_style('big'); app2.open_note_editor(); app2.undo_mark()
-assert any('setReadonly(true)' in x for x in calls)
+app2.sel_done(k2, 0, 4, 'x'); app2.apply_style('big'); app2.open_note_editor(); app2.undo_mark()
 c2.set_setting('marks_view', 0); c2.reset_views()
 import tempfile as _tf, zipfile as _zf
 from sineva.syncmerge import DirFolder
@@ -191,13 +173,8 @@ c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(_tf.mkdtemp()
 app2.sync_dialog('start', 'x'); app2.sync_dialog('done', 'ok'); app2.sync_dialog('start', 'a'); app2.sync_dialog('backup', 'b'); app2._sync_close()
 app2.ask_continue('Книга', [(1, 1, 'Первое.'), (2, 2, 'Второе.')], lambda r: None, lambda: None)
 app2.open_diary(); app2.open_append()
-_gone = []
-_orig_go = c2.go; c2.go = lambda d: _gone.append(d)
-app2.search_s._on_native([{'t': 'swipe', 'd': 1}, {'t': 'swipe', 'd': -1}, {'t': 'more'}])
-assert _gone == [1, -1, 1], _gone
-c2.go = _orig_go
 app2.search_s.update_nav({'pos': 2, 'total': 9, 'prev': True, 'next': True}); app2.search_s.update_nav(None)
-print('native smoke OK, вызовов JS:', len(calls))
+print('листание OK')
 
 # ---- окно «Синхронизация»
 app2.sync_dialog('start', 'Идёт…')

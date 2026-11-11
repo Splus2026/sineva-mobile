@@ -509,23 +509,6 @@ try:
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
-# ---- родная отрисовка: HTML карточек
-from sineva.ui import htmlview, nativeview
-import re as _re
-_c = {'key': 'a.txt:5', 'header': '[b]Блок[/b] [size=12sp][color=777777]x[/color][/size]', 'text': 'Я <люблю> тебя & вас',
-      'hl': [(2, 9, 2)], 'marks': [(10, 14)], 'expanded': False}
-_h = htmlview.card_html(_c, True)
-check('html: экранирование', '&lt;люблю&gt;' in _h and '&amp;' in _h and '<люблю>' not in _h)
-check('html: подсветка и подчёркивание', 'hl2' in _h and 'mk' in _h and 'data-key="a.txt:5"' in _h)
-check('html: кнопка Полностью', 'Полностью' in _h and 'Полностью' not in htmlview.card_html(_c))
-_spans = [(int(a), int(b)) for a, b in _re.findall(r'data-a="(\d+)" data-b="(\d+)"', _h)]
-check('html: куски покрывают текст', bool(_spans) and _spans[0][0] == 0 and _spans[-1][1] == len(_c['text'])
-      and all(_spans[i][1] == _spans[i + 1][0] for i in range(len(_spans) - 1)))
-import base64 as _b64
-check('html: js_call отдаёт строки в base64', 'D("%s")' % _b64.b64encode('a"b\u2028'.encode()).decode() in htmlview.js_call('setMore', 'a"b\u2028'))
-check('html: страница', 'setFont' in htmlview.page_html({'BG': (0, 0, 0, 1), 'CARD': (1, 1, 1, 1), 'BODY': (1, 1, 1, 1), 'ACCENT': (0, 0, 1, 1), 'MARK_COLOR': 'fff', 'HL_TEXT': ''}, 16))
-check('native: на ПК недоступен', nativeview.available() is False)
-
 # ---- синхронизация с папкой
 import json as _json
 from sineva import marks as _mk, syncmerge as _sm
