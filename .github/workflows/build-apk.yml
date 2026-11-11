@@ -16,13 +16,24 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Кэш сборки (SDK, NDK, python-for-android)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          # ключ зависит от buildozer.spec: меняются requirements — кэш пересобирается; иначе берётся прежний
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
       - name: Зависимости
         # у раннера GitHub иногда не работает зеркало azure.archive.ubuntu.com (DNS) — переходим на основные серверы и повторяем
         run: |
-          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g; s#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          # по логам работает именно https://archive.ubuntu.com, а http/azure-зеркало — нет (DNS)
+          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#https://archive.ubuntu.com/ubuntu#g; s#https\?://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g; s#http://archive.ubuntu.com#https://archive.ubuntu.com#g; s#http://security.ubuntu.com#https://security.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
           for i in 1 2 3 4 5; do
-            sudo apt-get update -o Acquire::Retries=5 && \
-            sudo apt-get install -y -o Acquire::Retries=5 --fix-missing git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev && break
+            sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 && \
+            sudo apt-get install -y -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 --fix-missing git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev && break
             echo "Установка пакетов: попытка $i не удалась, повтор через 30 с"
             sleep 30
           done
