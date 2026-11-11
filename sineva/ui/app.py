@@ -476,7 +476,7 @@ class SearchScreen(Screen):
         self.nav_next.bind(on_release=lambda *_: self.ctl.go(1))
         for w_ in (self.nav_prev, self.nav_lab, self.nav_next):
             self.navbar.add_widget(w_)
-        root.add_widget(self.navbar)
+        # строка «Назад — N из M — Далее» убрана: листание свайпом (виджеты остаются для update_nav, но не показываются)
         self.add_widget(root)
 
     def update_nav(self, nav):
@@ -510,12 +510,35 @@ class SearchScreen(Screen):
     def destroy(self):
         pass
 
-    def turn(self, direction):
-        """Эффект перелистывания: новая страница выезжает с края (вперёд — справа, назад — слева) и проявляется."""
+    def _snapshot(self):
+        """Снимок текущей страницы (картинка), чтобы она уезжала, пока под ней уже строится следующий блок."""
+        try:
+            img = self.sv.export_as_image()
+            ghost = Widget(size_hint=(1, 1), pos_hint={'x': 0, 'y': 0})
+            with ghost.canvas:
+                Color(1, 1, 1, 1)
+                rect = Rectangle(texture=img.texture, pos=ghost.pos, size=ghost.size)
+            ghost.bind(pos=lambda w, v: setattr(rect, 'pos', v), size=lambda w, v: setattr(rect, 'size', v))
+            return ghost
+        except Exception:
+            return None
+
+    def turn(self, direction, ghost=None):
+        """Листание как в книге: прежний блок уезжает в сторону, а следом, без зазора, выезжает следующий.
+           Вперёд — влево, назад — вправо."""
         Animation.cancel_all(self.sv)
-        self.sv.pos_hint = {'x': 0.45 * direction, 'y': 0}
-        self.sv.opacity = 0.0
-        Animation(pos_hint={'x': 0, 'y': 0}, opacity=1, d=0.28, t='out_cubic').start(self.sv)
+        for g in self.__dict__.get('_ghosts', []):
+            self.page.remove_widget(g)
+        self._ghosts = []
+        self.sv.opacity = 1
+        self.sv.pos_hint = {'x': 1.0 * direction, 'y': 0}
+        Animation(pos_hint={'x': 0, 'y': 0}, d=0.3, t='out_cubic').start(self.sv)
+        if ghost is not None:
+            self._ghosts = [ghost]
+            self.page.add_widget(ghost)
+            anim = Animation(pos_hint={'x': -1.0 * direction, 'y': 0}, d=0.3, t='out_cubic')
+            anim.bind(on_complete=lambda *a: (self.page.remove_widget(ghost), self._ghosts.clear()) if ghost.parent else None)
+            anim.start(ghost)
 
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
@@ -552,6 +575,7 @@ class SearchScreen(Screen):
         direction = (1 if new_pos > self._last_pos else -1) if (cards and self._last_pos and new_pos and new_pos != self._last_pos
                                                                and keys != self._keys) else 0
         self._last_pos = new_pos
+        ghost = self._snapshot() if direction else None
         self.update_nav(nav)
 
         def reset():
@@ -576,7 +600,7 @@ class SearchScreen(Screen):
         self._cards.append(w)
         self.box.add_widget(w)
         if direction:
-            self.turn(direction)
+            self.turn(direction, ghost)
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
