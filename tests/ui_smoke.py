@@ -35,10 +35,12 @@ class _Clock2: pass
 class App(W):
     def run(self): pass
 class Animation:
-    def __init__(self, **kw): pass
+    def __init__(self, **kw): self.cb = None
     @staticmethod
     def cancel_all(w): pass
-    def start(self, w): pass
+    def bind(self, on_complete=None): self.cb = on_complete
+    def start(self, w):
+        if self.cb: self.cb(self, w)
 mod('kivy'); mod('kivy.animation', Animation=Animation); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
 mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None, remove_widget=lambda w: None, add_widget=lambda w: None))
 mod('kivy.metrics', dp=lambda x: x if isinstance(x, (int, float)) else 10, sp=lambda x: x)
@@ -140,6 +142,13 @@ app2.search_s.turn(1); app2.search_s.turn(-1)
 if len(c2.search.visible(c2.outcome)) > 1:
     p0 = c2.nav['pos']; c2.go(1); assert c2.nav['pos'] == p0 + 1
     c2.go(-1); assert c2.nav['pos'] == p0
+# перетаскивание страницы: начало, движение в обе стороны, отпускание (с переходом и без)
+ss = app2.search_s
+ss.page.width = 400
+ss._drag_begin(); ss._drag_move(-150); ss._drag_move(80); ss._drag_end(-20, 0.5)
+ss._anim_busy = False; ss._drag_begin(); ss._drag_move(-300); ss._drag_end(-300, 0.5); ss._drop_cover()
+ss._anim_busy = False
+assert c2.peek(-1) is None or c2.peek(-1)['key']
 app2.on_anchor(key, 0, 4, None)
 assert app2.cur_sel and app2.cur_sel['key'] == key
 app2.apply_style('big'); app2.apply_style('color')

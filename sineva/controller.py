@@ -330,6 +330,27 @@ class Controller:
         self.nav = {'pos': pos, 'total': total, 'prev': prev, 'next': nxt}
         return cards, len(items), self.nav
 
+    def peek(self, delta: int):
+        """Карточка соседнего блока (delta = ±1) для показа при перетаскивании страницы; None, если соседа нет.
+           Позиция (win_start) при этом не меняется — кроме подгрузки блоков чтения слева, которая сдвигает индекс."""
+        items = self._items()
+        if self.reading:
+            book = self.library.find(self.reading['book'])
+            new = self.win_start + delta
+            if book and new >= len(items):
+                self._read_load(book, True)
+            elif book and new < 0 and self._read_load(book, False):
+                pass
+            items = self._items()
+        new = self.win_start + delta
+        if not 0 <= new < len(items):
+            return None
+        item = items[new]
+        self.search.fill([item])
+        key = f"{item['book']}:{item['rowid']}"
+        brief = self.config.get_bool('brief_view', False) and not self.reading
+        return self._card(new, key, item, brief and key not in self.expanded, key in self.expanded)
+
     def full_cards(self):
         return self._build(False)[0]
 

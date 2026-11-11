@@ -402,6 +402,11 @@ class SearchScreen(Screen):
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
+        self._peek_gen = 0               # поколение соседних страниц при перетаскивании
+        self._drag = None                # состояние перетаскивания {'panels': {±1: ScrollView}, 'sy': …}
+        self._anim_busy = False
+        self._swiped = False             # блок сменился перетаскиванием: прежняя анимация листания не нужна
+        self._cover = None               # соседняя страница, закрывающая место, пока строится новый блок
         self._last_pos = 0               # номер прежнего блока: по нему видно, в какую сторону перелистнули
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
@@ -489,20 +494,127 @@ class SearchScreen(Screen):
             b_.disabled = not flag
             b_.opacity = 1 if flag else 0.35
 
-    # листание свайпом
+    # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            touch.ud['sw0'] = (touch.x, touch.y)
+        if self.collide_point(*touch.pos) and not self._anim_busy:
+            touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
         return super().on_touch_down(touch)
 
+    def on_touch_move(self, touch):
+        st = touch.ud.get('sw0')
+        if st and not touch.ud.get('pinch') and not self._anim_busy:
+            dx, dy = touch.x - st[0], touch.y - st[1]
+            if touch.ud.get('swd') is None:
+                if abs(dx) > dp(14) and abs(dx) > 1.5 * abs(dy):
+                    touch.ud['swd'] = True
+                    self._drag_begin()
+                elif abs(dy) > dp(14):
+                    touch.ud['swd'] = False
+            if touch.ud.get('swd'):
+                self.sv.scroll_y = st[3]                    # во время перетаскивания текст по вертикали не едет
+                self._drag_move(dx)
+                return True
+        return super().on_touch_move(touch)
+
     def on_touch_up(self, touch):
-        start = touch.ud.get('sw0')
+        st = touch.ud.get('sw0')
         res = super().on_touch_up(touch)
-        if start and not touch.ud.get('pinch'):
-            dx, dy = touch.x - start[0], touch.y - start[1]
-            if abs(dx) > dp(90) and abs(dy) < dp(60) and abs(dx) > 2 * abs(dy):
-                self.ctl.go(1 if dx < 0 else -1)
+        if st and touch.ud.get('swd'):
+            self._drag_end(touch.x - st[0], time.time() - st[2])
+            return True
         return res
+
+    def _clear_panels(self):
+        self._peek_gen += 1
+        if self._drag:
+            for pv in self._drag['panels'].values():
+                if pv is not None and pv.parent is not None and pv is not self._cover:
+                    self.page.remove_widget(pv)
+        self._drag = None
+
+    def _drag_begin(self):
+        Animation.cancel_all(self.sv)
+        for g in self.__dict__.get('_ghosts', []):
+            if g.parent is not None:
+                self.page.remove_widget(g)
+        self._ghosts = []
+        self._clear_panels()
+        self._drag = {'panels': {}, 'shown': None}
+
+    def _panel(self, sign):
+        """Страница соседнего блока (+1 — следующий, -1 — предыдущий) или None."""
+        d = self._drag
+        if sign not in d['panels']:
+            card = self.ctl.peek(sign)
+            pv = None
+            if card is not None:
+                pv, box = vlist()
+                pv.size_hint, pv.pos_hint = (1, 1), {'x': sign, 'y': 0}
+                box.add_widget(self._card(card, None, None, peek=True))
+            d['panels'][sign] = pv
+        return d['panels'][sign]
+
+    def _drag_move(self, dx):
+        d = self._drag
+        if d is None:
+            return
+        W = max(1.0, float(self.page.width))
+        sign = 1 if dx < 0 else -1
+        pv = self._panel(sign)
+        if d['shown'] is not None and d['shown'] is not pv and d['shown'].parent is not None:
+            self.page.remove_widget(d['shown'])
+        d['shown'] = pv
+        off = dx if pv is not None else dx * 0.3             # с краю списка страница упруго сопротивляется
+        self.sv.pos_hint = {'x': off / W, 'y': 0}
+        if pv is not None:
+            if pv.parent is None:
+                self.page.add_widget(pv)
+            pv.pos_hint = {'x': off / W + sign, 'y': 0}
+
+    def _drag_end(self, dx, dt):
+        d = self._drag
+        if d is None:
+            return
+        W = max(1.0, float(self.page.width))
+        sign = 1 if dx < 0 else -1
+        pv = d['panels'].get(sign)
+        fast = abs(dx) > dp(50) and dt < 0.35
+        commit = pv is not None and (abs(dx) > W * 0.28 or fast)
+        self._anim_busy = True
+        if commit:
+            Animation(pos_hint={'x': -sign, 'y': 0}, d=0.18, t='out_quad').start(self.sv)
+            anim = Animation(pos_hint={'x': 0, 'y': 0}, d=0.18, t='out_quad')
+
+            def finish(*a):
+                self._anim_busy = False
+                self._cover = pv                              # закрывает место, пока новый блок строится под ним
+                self._swiped = True
+                self.sv.pos_hint = {'x': 0, 'y': 0}
+                self._drag = None
+                self.ctl.go(sign)
+                Clock.schedule_once(lambda dt: self._drop_cover(), 0.8)   # страховка, если блок не сменился
+            anim.bind(on_complete=finish)
+            anim.start(pv)
+        else:
+            Animation(pos_hint={'x': 0, 'y': 0}, d=0.18, t='out_quad').start(self.sv)
+            shown = d['shown']
+            anim = Animation(pos_hint={'x': float(sign), 'y': 0}, d=0.18, t='out_quad')
+
+            def back(*a):
+                self._anim_busy = False
+                self._clear_panels()
+                self.sv.pos_hint = {'x': 0, 'y': 0}
+            anim.bind(on_complete=back)
+            if shown is not None and shown.parent is not None:
+                anim.start(shown)
+            else:
+                Clock.schedule_once(back, 0.18)
+
+    def _drop_cover(self):
+        pv, self._cover = self._cover, None
+        self._swiped = False
+        if pv is not None and pv.parent is not None:
+            self.page.remove_widget(pv)
 
     def refresh_card(self, key):
         """Слои карточки перерисовываются через refresh_layers."""
@@ -576,7 +688,8 @@ class SearchScreen(Screen):
         direction = (1 if new_pos > self._last_pos else -1) if (cards and self._last_pos and new_pos and new_pos != self._last_pos
                                                                and keys != self._keys) else 0
         self._last_pos = new_pos
-        ghost = self._snapshot() if direction else None
+        swiped = self._swiped
+        ghost = self._snapshot() if direction and not swiped else None
         self.update_nav(nav)
 
         def reset():
@@ -605,7 +718,9 @@ class SearchScreen(Screen):
         w = self._card(cards[0], tok, done)
         self._cards.append(w)
         self.box.add_widget(w)
-        if direction:
+        if swiped:
+            Clock.schedule_once(lambda dt: self._drop_cover(), 0.12)
+        elif direction:
             self.turn(direction, ghost)
 
     def clear(self):
@@ -646,7 +761,7 @@ class SearchScreen(Screen):
             self._active.clear_selection()
         self._active = widget
 
-    def _card(self, c, tok=None, on_done=None):
+    def _card(self, c, tok=None, on_done=None, peek=False):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
@@ -666,12 +781,16 @@ class SearchScreen(Screen):
             parts.append(w)
             box.add_widget(w)
 
+        gen = self._peek_gen
         make(*chunks.pop(0))                           # первый кусок — сразу (это первый экран)
         if chunks:
-            self.dot.set('yellow')
+            if not peek:
+                self.dot.set('yellow')
 
             def more_chunks(dt):
-                if tok is not None and tok != self._tok:
+                if peek and gen != self._peek_gen:
+                    return
+                if not peek and tok is not None and tok != self._tok:
                     return
                 make(*chunks.pop(0))
                 if chunks:
@@ -681,7 +800,8 @@ class SearchScreen(Screen):
             Clock.schedule_once(more_chunks, 0)
         elif on_done:
             on_done()
-        self._widgets[key] = parts
+        if not peek:
+            self._widgets[key] = parts
         if self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading:         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),
                           background_normal='', background_color=BTN2, color=BTN2_TXT)
