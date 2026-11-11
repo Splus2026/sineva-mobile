@@ -17,9 +17,16 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Зависимости
+        # у раннера GitHub иногда не работает зеркало azure.archive.ubuntu.com (DNS) — переходим на основные серверы и повторяем
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g; s#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          for i in 1 2 3 4 5; do
+            sudo apt-get update -o Acquire::Retries=5 && \
+            sudo apt-get install -y -o Acquire::Retries=5 --fix-missing git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev && break
+            echo "Установка пакетов: попытка $i не удалась, повтор через 30 с"
+            sleep 30
+          done
+          dpkg -s openjdk-17-jdk cmake >/dev/null
           pip install buildozer cython==0.29.36
       - name: Тесты ядра
         run: python tests/run_core_tests.py
