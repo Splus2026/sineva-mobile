@@ -399,7 +399,6 @@ class SearchScreen(Screen):
         self._tok = 0
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
-        self._more_btn = None
         self._widgets = {}               # ключ -> виджеты-куски текста
         self.native = None               # NativeList (родная отрисовка) или None
         self._native_on = app.native_wanted()
@@ -466,7 +465,44 @@ class SearchScreen(Screen):
             root.add_widget(self.holder)
         else:
             root.add_widget(self.sv)
+        # листание блоков: «Назад» — «N из M» — «Далее» (то же делает свайп влево/вправо)
+        self.navbar = BoxLayout(size_hint_y=None, height=0, spacing=dp(4), opacity=0)
+        self.nav_prev = Button(text='Назад', size_hint_x=0.3, background_normal='', background_color=BTN2,
+                               color=BTN2_TXT, font_size=sp(15))
+        self.nav_prev.bind(on_release=lambda *_: self.ctl.go(-1))
+        self.nav_lab = Label(text='', color=TXT, font_size=sp(15))
+        self.nav_next = Button(text='Далее', size_hint_x=0.3, background_normal='', background_color=BTN2,
+                               color=BTN2_TXT, font_size=sp(15))
+        self.nav_next.bind(on_release=lambda *_: self.ctl.go(1))
+        for w_ in (self.nav_prev, self.nav_lab, self.nav_next):
+            self.navbar.add_widget(w_)
+        root.add_widget(self.navbar)
         self.add_widget(root)
+
+    def update_nav(self, nav):
+        total = nav['total'] if nav else 0
+        on = total > 0
+        self.navbar.height = dp(44) if on else 0
+        self.navbar.opacity = 1 if on else 0
+        self.nav_lab.text = f"{nav['pos']} из {total}" if on else ''
+        for b_, flag in ((self.nav_prev, nav and nav['prev']), (self.nav_next, nav and nav['next'])):
+            b_.disabled = not flag
+            b_.opacity = 1 if flag else 0.35
+
+    # листание свайпом (стандартная отрисовка; в WebView то же ловит страница)
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            touch.ud['sw0'] = (touch.x, touch.y)
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        start = touch.ud.get('sw0')
+        res = super().on_touch_up(touch)
+        if start and not self._native_on and not touch.ud.get('pinch'):
+            dx, dy = touch.x - start[0], touch.y - start[1]
+            if abs(dx) > dp(90) and abs(dy) < dp(60) and abs(dx) > 2 * abs(dy):
+                self.ctl.go(1 if dx < 0 else -1)
+        return res
 
     # ---------- родная отрисовка (WebView) ----------
     def _nl(self):
@@ -521,7 +557,9 @@ class SearchScreen(Screen):
             elif t == 'note':
                 self.app.on_note_tap(int(e['nid']))
             elif t == 'more':
-                ctl.show_more()
+                ctl.go(1)
+            elif t == 'swipe':
+                ctl.go(int(e.get('d', 1)))
             elif t == 'expand':
                 ctl.toggle_expand(e['key'])
 
@@ -533,21 +571,35 @@ class SearchScreen(Screen):
         if card is not None:
             self.native.call(htmlview.js_call('updateCard', key, htmlview.card_html(card, self._expand_on())))
 
-    def _show_native(self, cards, total, more, incremental, ev, fresh, t0):
+    def _show_native(self, cards, nav, fresh, t0):
+        """Блок в WebView: сначала первая часть (то, что видно на экране) — жёлтый индикатор, затем весь текст — зелёный."""
         nl = self._nl()
         ctl = self.ctl
         exp = self._expand_on()
-        if incremental:
-            new = ev['new']
-            nl.call(htmlview.js_call('appendCards', ''.join(htmlview.card_html(c, exp) for c in cards[len(cards) - new:]),
-                                     ev['drop']))
-        else:
-            nl.call(htmlview.js_call('setCards', ''.join(htmlview.card_html(c, exp) for c in cards)))
-            if fresh or not self.reading_screen:
-                nl.call(htmlview.js_call('scrollTop'))
         nl.call(htmlview.js_call('setReadonly', ctl.marks_only()))
-        nl.call(htmlview.js_call('setMore', ctl.more_label if more else ''))
+        nl.call(htmlview.js_call('setMore', ''))
         self._keys = [c['key'] for c in cards]
+        tok = self._tok
+        card = cards[0] if cards else None
+        if card is not None and len(card['text']) > 2500 and len(card['chunks']) > 1:
+            end = card['chunks'][0][1]
+            part = dict(card, text=card['text'][:end],
+                        hl=[(s_, min(e_, end), p_) for s_, e_, p_ in card['hl'] if s_ < end],
+                        **clip_layers(card, 0, end))
+            nl.call(htmlview.js_call('setCards', htmlview.card_html(part, exp)))
+            self.dot.set('yellow')
+
+            def full(dt):
+                if tok != self._tok or self.native is None:
+                    return
+                fresh_card = ctl.card_dict(card['key']) or card
+                nl.call(htmlview.js_call('updateCard', card['key'], htmlview.card_html(fresh_card, exp)))
+                self.dot.set('green')
+            Clock.schedule_once(full, 0.12)
+        else:
+            nl.call(htmlview.js_call('setCards', htmlview.card_html(card, exp) if card else ''))
+            self.dot.set('green' if card else None)
+        nl.call(htmlview.js_call('scrollTop'))
         built = (time.time() - t0) * 1000
         self._suffix = f" · отправлено в WebView: {built:.0f} мс"
         self.status.text = escape_markup(self._base + self._suffix)
@@ -567,82 +619,53 @@ class SearchScreen(Screen):
         self._base = text
         self.status.text = escape_markup(text + self._suffix)
 
-    def show_cards(self, cards, total, more):
-        """Карточки рисуются постепенно: первая сразу, остальные по одной на кадр — пока пользователь
-           читает первые, дорисовываются следующие (экран не ждёт, пока будет готово всё)."""
+    def show_cards(self, cards, total, nav):
+        """Показывается один блок. Сначала текст первого экрана (жёлтый индикатор), остальные куски блока
+           дорисовываются по одному на кадр; когда готов весь блок — индикатор зеленеет."""
         t0 = time.time()
         self._suffix = ''
         self.dot.set(None)
         ctl = self.ctl
         self._tok += 1
         tok = self._tok
-        ev, ctl.pending_append = ctl.pending_append, None
+        ctl.pending_append = None
         reading = ctl.reading
         fresh = bool(reading and reading.pop('fresh', False))
         keys = [c['key'] for c in cards]
-        incremental = bool(ev and self._keys and keys[:len(self._keys) - ev['drop']] == self._keys[ev['drop']:])
-        if not incremental and any(c.get('stub') for c in cards):
-            cards = ctl.full_cards()                       # заглушки годятся только для дорисовки
+        if keys != self._keys:                               # другой блок: выделение прежнего больше не нужно
+            self.app.cur_sel = None
+            self.app.refresh_actions()
+        self.update_nav(nav)
         if self._native_on:
-            self._show_native(cards, total, more, incremental, ev, fresh, t0)
+            self._show_native(cards, nav, fresh, t0)
             return
-        shift = 0
-        if incremental:
-            drop, new = ev['drop'], ev['new']
-            gone = self._cards[:drop]
-            shift = sum(w.height for w in gone) + dp(6) * drop
-            for k in self._keys[:drop]:
-                self._widgets.pop(k, None)
-            for w in gone:
-                self.box.remove_widget(w)
-            self._cards = self._cards[drop:]
-            if self._more_btn is not None:
-                self.box.remove_widget(self._more_btn)
-                self._more_btn = None
-            todo = list(cards[len(cards) - new:])
-            keep_scroll(self.sv, lambda: None, shift)
-        else:
-            def reset():
-                self.box.clear_widgets()
-                self._cards, self._widgets, self._more_btn = [], {}, None
-            keep_scroll(self.sv, reset)
-            todo = list(cards)
+
+        def reset():
+            self.box.clear_widgets()
+            self._cards, self._widgets = [], {}
+        keep_scroll(self.sv, reset)
         self._keys = keys
-        if fresh or (not incremental and not self.reading_screen):
-            self.sv.scroll_y = 1                                 # новая выдача — с начала
-
-        first = {'ms': None}
-
-        def finish():
-            if more:
-                self._more_btn = btn(ctl.more_label or 'Показать ещё', ctl.show_more)
-                self.box.add_widget(self._more_btn)
-            elif not cards and not self.reading_screen and ctl.query.strip():
+        self.sv.scroll_y = 1                                 # новый блок — с начала
+        if not cards:
+            if not self.reading_screen and ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
+            return
+
+        def done():
+            if tok != self._tok:
+                return
             built = (time.time() - t0) * 1000
             self.dot.set('green')
-            self._suffix = f" · первая карточка: {first['ms'] or built:.0f} мс, все: {built:.0f} мс"
+            self._suffix = f" · блок нарисован за {built:.0f} мс"
             self.status.text = escape_markup(self._base + self._suffix)
-
-        def step(dt):
-            if tok != self._tok:                           # пришла новая выдача — эта дорисовка не нужна
-                return
-            if todo:
-                w = self._card(todo.pop(0))
-                self._cards.append(w)
-                self.box.add_widget(w)
-                if first['ms'] is None:
-                    first['ms'] = (time.time() - t0) * 1000
-                    self.dot.set('yellow')
-            if todo:
-                Clock.schedule_once(step, 0)
-            else:
-                finish()
-        step(0)
+        w = self._card(cards[0], tok, done)
+        self._cards.append(w)
+        self.box.add_widget(w)
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
         self.dot.set(None)
+        self.update_nav(None)
         if self._native_on:
             self._keys = []
             if self.native is not None:
@@ -651,7 +674,7 @@ class SearchScreen(Screen):
                 self.native.call(htmlview.js_call('setFont', self.ctl.config.get_int('font_size', 16), self.ctl.font_step()))
             return
         self.box.clear_widgets()
-        self._keys, self._cards, self._widgets, self._more_btn = [], [], {}, None
+        self._keys, self._cards, self._widgets = [], [], {}
 
     def reveal(self, key, pos):
         """Показать на экране место карточки key (позиция pos в её тексте): прокрутка, если оно вне видимой части."""
@@ -685,14 +708,16 @@ class SearchScreen(Screen):
             self._active.clear_selection()
         self._active = widget
 
-    def _card(self, c):
+    def _card(self, c, tok=None, on_done=None):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         head = mlabel(c['header'], font_size=sp(14))
         key = c['key']
         box.add_widget(head)
         parts = []
-        for a_, b_ in c['chunks']:                    # длинный текст — несколькими виджетами подряд
+        chunks = list(c['chunks'])
+
+        def make(a_, b_):
             sub = dict(c, text=c['text'][a_:b_], offset=a_,
                        hl=[(max(s_, a_) - a_, min(e_, b_) - a_, p_) for s_, e_, p_ in c['hl'] if e_ > a_ and s_ < b_],
                        **clip_layers(c, a_, b_))
@@ -702,6 +727,22 @@ class SearchScreen(Screen):
                                readonly=self.ctl.marks_only())
             parts.append(w)
             box.add_widget(w)
+
+        make(*chunks.pop(0))                           # первый кусок — сразу (это первый экран)
+        if chunks:
+            self.dot.set('yellow')
+
+            def more_chunks(dt):
+                if tok is not None and tok != self._tok:
+                    return
+                make(*chunks.pop(0))
+                if chunks:
+                    Clock.schedule_once(more_chunks, 0)
+                elif on_done:
+                    on_done()
+            Clock.schedule_once(more_chunks, 0)
+        elif on_done:
+            on_done()
         self._widgets[key] = parts
         if self.ctl.config.get_bool('brief_view', False) and not self.ctl.reading:         # «Полностью» нужна только в кратком виде
             more = Button(text='Свернуть' if c['expanded'] else 'Полностью', size_hint_y=None, height=dp(34),

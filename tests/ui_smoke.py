@@ -188,6 +188,12 @@ c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(_tf.mkdtemp()
 app2.sync_dialog('start', 'x'); app2.sync_dialog('done', 'ok'); app2.sync_dialog('start', 'a'); app2.sync_dialog('backup', 'b'); app2._sync_close()
 app2.ask_continue('Книга', [(1, 1, 'Первое.'), (2, 2, 'Второе.')], lambda r: None, lambda: None)
 app2.open_diary(); app2.open_append()
+_gone = []
+_orig_go = c2.go; c2.go = lambda d: _gone.append(d)
+app2.search_s._on_native([{'t': 'swipe', 'd': 1}, {'t': 'swipe', 'd': -1}, {'t': 'more'}])
+assert _gone == [1, -1, 1], _gone
+c2.go = _orig_go
+app2.search_s.update_nav({'pos': 2, 'total': 9, 'prev': True, 'next': True}); app2.search_s.update_nav(None)
 print('native smoke OK, вызовов JS:', len(calls))
 
 # ---- окно «Синхронизация»

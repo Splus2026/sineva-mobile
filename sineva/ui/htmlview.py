@@ -153,6 +153,7 @@ button.ex{padding:6px;font-size:14px;margin-top:6px;background:transparent;color
 var ev=[], anchor=null, ro=false;
 function clearAnchor(){ if(anchor){ anchor.el.classList.remove('sel'); anchor=null; } }
 document.addEventListener('click',function(e){
+  if(Date.now()-swiped<500) return;
   var t=e.target;
   if(t.id==='more'){ ev.push({t:'more'}); return; }
   if(t.classList.contains('ex')){ ev.push({t:'expand',key:t.getAttribute('data-key')}); return; }
@@ -166,6 +167,14 @@ document.addEventListener('click',function(e){
   clearAnchor();
   ev.push({t:'select',key:key,s:s,e:en});
 });
+// листание свайпом: влево — следующий блок, вправо — предыдущий
+var sx=0, sy=0, swiped=0;
+document.addEventListener('touchstart',function(e){ var t=e.touches[0]; sx=t.clientX; sy=t.clientY; },{passive:true});
+document.addEventListener('touchend',function(e){
+  if(e.touches.length) return;
+  var t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy;
+  if(Math.abs(dx)>90 && Math.abs(dy)<60 && Math.abs(dx)>2*Math.abs(dy)){ swiped=Date.now(); ev.push({t:'swipe',d:dx<0?1:-1}); }
+},{passive:true});
 function cards(){ return document.getElementById('cards'); }
 window.SV={
   ready:true,

@@ -54,6 +54,7 @@ class Controller:
         self.shown = 0
         self.cap = 0                           # сколько «лучших» топиков сейчас доступно (растёт кнопкой)
         self.more_label = ''
+        self.nav = {'pos': 0, 'total': 0, 'prev': False, 'next': False}
         self.offsets = {}                       # ключ топика -> с какого символа показывается окно длинного текста
         self.expanded = set()                   # ключи раскрытых (полный текст) топиков
         self.selected = self._load_selected()
@@ -292,9 +293,7 @@ class Controller:
         self.outcome = outcome
         self.outcome_books = set(self.selected)
         self.win_start = 0
-        cand = self._items()[:self.config.get_int('page_size', 3)]
-        self.search.fill(cand)
-        self.shown = self._fit([len(it.get('content') or '') for it in cand])
+        self.shown = 1                                      # на экране всегда один блок; соседние готовятся заранее
         self.expanded.clear()
         self.offsets.clear()
         self._publish()
@@ -313,26 +312,27 @@ class Controller:
     def _items(self):
         return self.outcome.results if self.reading else self.search.visible(self.outcome)
 
-    def _build(self, light: bool):
-        """Карточки показанного окна. light — для «Показать ещё»: полностью строятся только новые карточки,
-           остальные — заглушки {'key', 'stub'} (интерфейс их не перерисовывает)."""
+    def _build(self, light: bool = False):
+        """Один показанный блок (текущий) и данные для листания: nav = {pos, total, prev, next}."""
         items = self._items()
+        self.win_start = max(0, min(self.win_start, len(items) - 1))
+        seg = items[self.win_start:self.win_start + 1]
+        self.search.fill(seg)                              # текст подгружается только для показанного
         brief = self.config.get_bool('brief_view', False) and not self.reading
-        start = 0 if self.reading else self.win_start
-        count = len(items) if self.reading else max(0, min(self.shown, len(items) - start))
-        seg = items[start:start + count]
-        self.search.fill(seg)                              # текст подгружается только для показанных
-        keep_from = len(seg) - self.pending_append['new'] if light and self.pending_append else 0
         cards = []
-        for i, item in enumerate(seg):
+        for item in seg:
             key = f"{item['book']}:{item['rowid']}"
-            if i < keep_from:
-                cards.append({'key': key, 'stub': True})
-                continue
             expanded = key in self.expanded
-            cards.append(self._card(start + i, key, item, brief and not expanded, expanded))
-        has_more = self.reading['has_next'] if self.reading else (start + count < len(items))
-        return cards, len(items), has_more
+            cards.append(self._card(self.win_start, key, item, brief and not expanded, expanded))
+        if self.reading and seg:
+            pos, total = seg[0].get('ordinal', self.win_start + 1), self.reading['total']
+            nxt = self.win_start + 1 < len(items) or bool(self.reading['has_next'])
+            prev = pos > 1
+        else:
+            pos, total = (self.win_start + 1 if seg else 0), len(items)
+            nxt, prev = self.win_start + 1 < len(items), self.win_start > 0
+        self.nav = {'pos': pos, 'total': total, 'prev': prev, 'next': nxt}
+        return cards, len(items), self.nav
 
     def full_cards(self):
         return self._build(False)[0]
@@ -340,9 +340,8 @@ class Controller:
     def _publish(self) -> None:
         self.dirty.discard(self.tab)
         self.dirty.add('read' if self.tab == 'search' else 'search')     # карточки другой вкладки теперь устарели
-        cards, total, has_more = self._build(True)
-        self.more_label = f"Показать ещё {self.config.get_int('page_size', 3)}" if has_more else ''
-        self.on_cards(cards, total, has_more)
+        cards, total, nav = self._build()
+        self.on_cards(cards, total, nav)
         if self.on_words is not _noop:                 # панель слов отключена в интерфейсе — зря не считаем
             self.on_words(self.search.panel_words(self.outcome))
 
@@ -357,6 +356,7 @@ class Controller:
         self.reading = None
         self.pending_append = None
         self.more_label = ''
+        self.nav = {'pos': 0, 'total': 0, 'prev': False, 'next': False}
         self.dirty.clear()
         self.undo_stack.clear()
         self.on_undo(0)
@@ -1042,72 +1042,99 @@ class Controller:
                 for i, (rid, content, pos) in enumerate(rows)]
 
     def _read_from(self, book, start: int) -> None:
-        """Начинает чтение с блока rowid=start: показывает page_size блоков подряд."""
+        """Начинает чтение с блока rowid=start: показывается один блок, следующие подгружаются про запас."""
         rows, total, has_next, base = self._read_rows(book, start, self.config.get_int('page_size', 3))
         if not rows:
             self.on_status("В книге нет блоков")
             return
-        k = self._fit([len(r[1]) for r in rows])
-        if k < len(rows):
-            rows, has_next = rows[:k], True
         outcome = SearchOutcome(query='')
         outcome.results = self._read_items(book, rows, base)
         self.outcome = outcome
+        self.win_start = 0
+        self.shown = 1
         self.reading = {'book': book.file_name, 'last': rows[-1][0], 'has_next': has_next, 'total': total,
                         'fresh': True}
         self.expanded.clear()
         self.offsets.clear()
-        self.set_setting(self._read_key(book.file_name), rows[-1][0])       # запоминается последнее прочитанное место
-        self._remember_read(book.file_name, rows)
+        self._reading_seen(book, rows[0])
         self._publish()
-        self.on_status(f"Чтение: «{book.display}» · блоки с {base} из {total}")
+        self.on_status(f"Чтение: «{book.display}» · блок {base} из {total}")
 
-    def read_next(self) -> None:
-        r = self.reading
-        book = self.library.find(r['book']) if r else None
-        if not book or not r['has_next']:
-            return
-        step = self.config.get_int('page_size', 3)
-        rows, total, has_next, base = self._read_rows(book, r['last'] + 1, step)
+    def _reading_seen(self, book, row) -> None:
+        """Прочитанным считается показанный блок: от него будет предложено продолжить."""
+        self.set_setting(self._read_key(book.file_name), row[0])
+        self._remember_read(book.file_name, [row])
+
+    def _read_load(self, book, after: bool) -> bool:
+        """Подгрузка блоков за последним (after) или перед первым из уже загруженных."""
+        r, res = self.reading, self.outcome.results
+        step = max(3, self.config.get_int('page_size', 3))
+        if after:
+            if not r['has_next']:
+                return False
+            rows, total, has_next, base = self._read_rows(book, r['last'] + 1, step)
+            if not rows:
+                r['has_next'] = False
+                return False
+            res.extend(self._read_items(book, rows, base))
+            r['last'], r['has_next'] = rows[-1][0], has_next
+            return True
+        first = res[0]
+        if first.get('ordinal', 1) <= 1:
+            return False
+        lo = max(1, first['rowid'] - step)
+        rows, total, has_next, base = self._read_rows(book, lo, first['rowid'] - lo)
+        rows = [x for x in rows if x[0] < first['rowid']]
         if not rows:
-            r['has_next'] = False
-            self._publish()
-            return
-        k = self._fit([len(x[1]) for x in rows])
-        if k < len(rows):
-            rows, has_next = rows[:k], True
-        results = self.outcome.results
-        results.extend(self._read_items(book, rows, base))
-        drop = max(0, len(results) - self.WINDOW)
-        if drop:
-            self._release(results[:drop])
-            del results[:drop]
-        r['last'], r['has_next'] = rows[-1][0], has_next
-        self.set_setting(self._read_key(book.file_name), rows[-1][0])
-        self._remember_read(book.file_name, rows)
-        self.pending_append = {'drop': drop, 'new': len(rows)}
-        self._publish()
-        self.on_status(f"Чтение: «{book.display}» · блок {results[-1]['ordinal']} из {total}")
+            return False
+        res[0:0] = self._read_items(book, rows, base)
+        self.win_start += len(rows)
+        return True
 
-    def show_more(self) -> None:
-        """«Показать ещё 3»: карточки дорисовываются; сверх WINDOW самые первые выгружаются из памяти."""
+    def go(self, delta: int) -> None:
+        """Листание: следующий (+1) или предыдущий (-1) блок — и в поиске, и в чтении."""
         if self.reading:
-            self.read_next()
+            book = self.library.find(self.reading['book'])
+            if not book:
+                return
+            res = self.outcome.results
+            new = self.win_start + delta
+            if new >= len(res) and not self._read_load(book, True):
+                return
+            if new < 0:
+                if not self._read_load(book, False):
+                    return
+                new = self.win_start + delta
+            if not 0 <= new < len(self.outcome.results):
+                return
+            self.win_start = new
+            item = self.outcome.results[new]
+            self._reading_seen(book, (item['rowid'],))
+            self.pending_append = None
+            self._publish()
+            self.on_status(f"Чтение: «{book.display}» · блок {item['ordinal']} из {self.reading['total']}")
+            self._prefetch_read(book)
             return
         items = self._items()
-        step = self.config.get_int('page_size', 3)
-        cand = items[self.win_start + self.shown:self.win_start + self.shown + step]
-        self.search.fill(cand)
-        add = self._fit([len(it.get('content') or '') for it in cand])
-        if add <= 0:
+        new = self.win_start + delta
+        if not 0 <= new < len(items):
             return
-        drop = max(0, self.shown + add - self.WINDOW)
-        if drop:
-            self._release(items[self.win_start:self.win_start + drop])
-            self.win_start += drop
-        self.shown += add - drop
-        self.pending_append = {'drop': drop, 'new': add}
+        self.win_start = new
+        for j, it in enumerate(items):                      # память: текст держим только у текущего и соседних блоков
+            if abs(j - new) > 2 and it.get('content') is not None:
+                it['content'] = None
+        self.expanded.clear()
+        self.pending_append = None
         self._publish()
+        self.search.fill(items[max(0, new - 1):new + 2])    # соседние блоки готовятся заранее
+
+    def _prefetch_read(self, book) -> None:
+        """Чтение: заранее подгружаем блоки за текущим, чтобы листание не ждало диск."""
+        if self.win_start + 2 >= len(self.outcome.results) and self.reading['has_next']:
+            self._read_load(book, True)
+
+    def show_more(self) -> None:           # прежнее имя: теперь это просто «следующий блок»
+        self.go(1)
 
     def toggle_expand(self, key: str) -> None:
         if key in self.expanded:

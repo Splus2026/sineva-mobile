@@ -227,9 +227,11 @@ try:
     check('повторно — вернуть все', all(not r['excluded'] for r in got['words']) and got['cards'])
     ctl.config.set('page_size', 1)
     ctl.submit_query('вера')
-    check('страница из 1 карточки + есть ещё', len(got['cards']) == 1 and got['more'] is True)
-    ctl.show_more()
-    check('показать ещё', len(got['cards']) == 2)
+    check('на экране один блок, есть следующий', len(got['cards']) == 1 and got['more']['next'] is True and got['more']['pos'] == 1)
+    ctl.go(1)
+    check('листание вперёд', len(got['cards']) == 1 and got['more']['pos'] == 2 and got['more']['prev'] is True)
+    ctl.go(-1)
+    check('листание назад', got['more']['pos'] == 1 and got['more']['prev'] is False)
     ctl.config.set('brief_view', 1)
     ctl.submit_query('вера')
     check('краткий вид задаётся настройкой', any(c['segments'] != [(0, 0, len(c['text']))] or len(c['text']) < 60 for c in got['cards']))
@@ -290,18 +292,13 @@ try:
         if b != 'Много.txt': ctl.toggle_book(b)
     ctl.config.set('page_size', 3)
     ctl.submit_query('терпение')
-    check('сначала 3 карточки', len(got['cards']) == 3 and got['total'] == 60 and ctl.more_label.startswith('Показать ещё'), ctl.more_label)
+    check('сначала один блок из 60', len(got['cards']) == 1 and got['total'] == 60 and got['more'] == {'pos': 1, 'total': 60, 'prev': False, 'next': True}, str(got['more']))
     check('в статусе замеры и режим', 'поиск' in got['status'] and 'словарь' in got['status'], got['status'])
-    for _ in range(6):
-        ctl.show_more()
-    check('карточки докладываются по 3 до 20', len(got['cards']) == 20, str(len(got['cards'])))
-    first_key = got['cards'][0]['key']
-    ctl.show_more()
-    check('после 20 первые 3 выгружаются, окно не растёт', len(got['cards']) == 20 and got['cards'][0]['key'] != first_key
-          and ctl.win_start == 4 and ctl.pending_append == {'drop': 3, 'new': 3}, f"{len(got['cards'])} start={ctl.win_start}")
-    check('выгруженные карточки освобождают текст', ctl.outcome.results[0]['content'] is None)
-    check('подпись кнопки', ctl.more_label == 'Показать ещё 3', ctl.more_label)
-    check('номера карточек продолжаются', '24.' in got['cards'][-1]['header'] and got['cards'][0].get('stub') and len(ctl.full_cards()) == 20 and not ctl.full_cards()[0].get('stub'), got['cards'][-1]['header'])
+    for _ in range(25):
+        ctl.go(1)
+    check('листание вперёд на 25 блоков', got['more']['pos'] == 26 and len(got['cards']) == 1, str(got['more']))
+    check('далёкие блоки освобождают текст', ctl.outcome.results[0]['content'] is None)
+    check('номер блока в заголовке', '26.' in got['cards'][0]['header'], got['cards'][0]['header'])
     for b in ('bibl.txt', 'Грани.txt'):
         ctl.toggle_book(b)
     ctl.config.set('page_size', 50)
@@ -344,7 +341,7 @@ try:
     check('dnev.txt в папке книг, записи подряд', open(dn, encoding='utf-8').read() == 'Сегодня думал о вере.\nВторая запись про море.\n')
     check('дневник в списке книг и проиндексирован', ctl.library.find('dnev.txt') and ctl.library.find('dnev.txt').state == READY)
     ctl.config.set('page_size', 50); ctl.submit_query('море')
-    check('дневник находится поиском', any(c['key'].startswith('dnev.txt') for c in got['cards']))
+    check('дневник находится поиском', got['total'] >= 1 and any(it['book'] == 'dnev.txt' for it in ctl.outcome.results))
     check('дневник доступен для экспорта', ctl.diary_file() == dn)
     check('пустая запись не пишется', ctl.add_to_diary('   ') is False)
 
@@ -415,14 +412,20 @@ try:
     rc.set_tab('search')
     rc.selected = {'bibl.txt'}
     rc.set_tab('read')
-    check('чтение: блоки подряд', rg['cards'] and len(rg['cards']) == 2 and rc.reading, rg['status'])
+    check('чтение: один блок', rg['cards'] and len(rg['cards']) == 1 and rc.reading, rg['status'])
     check('чтение: заголовок «Блок 1»', 'Блок 1' in rg['cards'][0]['header'])
     first_text = rg['cards'][0]['text']
-    rc.show_more()
-    check('чтение: «Показать ещё» дорисовывает', len(rg['cards']) == 4 and rg['cards'][2]['text'] != first_text
-          and rc.pending_append == {'drop': 0, 'new': 2} or rc.pending_append is None)
+    rc.go(1)
+    check('чтение: листание вперёд', len(rg['cards']) == 1 and rg['cards'][0]['text'] != first_text and 'Блок 2' in rg['cards'][0]['header'])
+    rc.go(-1)
+    check('чтение: листание назад', rg['cards'][0]['text'] == first_text and rg['more']['prev'] is False)
+    rc.go(-1)
+    check('чтение: до начала не листается', 'Блок 1' in rg['cards'][0]['header'])
+    for _ in range(4):
+        rc.go(1)
+    check('чтение: подгрузка следующих блоков', rg['more']['pos'] == 5, str(rg['more']))
     rc.set_tab('search'); rc.set_tab('read')
-    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 1' in rc.full_cards()[0]['header'])
+    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 5' in rc.full_cards()[0]['header'])
     rc2 = Controller(paths, run_async=False)
     rg2 = {}
     rc2.on_cards = lambda cards, total, more: rg2.update(cards=cards)
@@ -449,24 +452,21 @@ try:
     rc4.selected = {'bibl.txt'}; rc4.selection_status()
     check('статус: алиас книги', 'Книги:' in msgs4[-1], msgs4[-1])
     check('склонение', [rc4._books_word(n) for n in (4, 5, 21)] == ['книги', 'книг', 'книга'])
-    # скользящее окно: после WINDOW карточек первые выгружаются
     rc3 = Controller(paths, run_async=False)
     rc3.on_cards = lambda *a: None; rc3.on_status = lambda t: None
     rc3.selected = {'bibl.txt'}; rc3.config.set('page_size', 3)
-    rc3.WINDOW = 6
     rc3.set_tab('read')
-    for _ in range(4):
-        if rc3.reading['has_next']:
-            rc3.show_more()
-    check('окно чтения не растёт сверх лимита', len(rc3.outcome.results) <= 6, str(len(rc3.outcome.results)))
+    rc3._read_from(rc3.library.find('bibl.txt'), 1)
+    start_ord = rc3.outcome.results[rc3.win_start]['ordinal']
+    for _ in range(3):
+        rc3.go(1)
+    for _ in range(2):
+        rc3.go(-1)
+    check('чтение: окно двигается туда и обратно', rc3.outcome.results[rc3.win_start]['ordinal'] == start_ord + 1, f"{start_ord} {rc3.win_start} {[r['ordinal'] for r in rc3.outcome.results]}")
     rc3.set_tab('search')
-    rc3.config.set('page_size', 3)
-    rc3.WINDOW = 6
     rc3.submit_query('довер')
-    n_vis = len(rc3.search.visible(rc3.outcome))
-    for _ in range(5):
-        rc3.show_more()
-    check('окно поиска ограничено', rc3.shown <= 6 and rc3.win_start >= 0, f"{rc3.shown} {rc3.win_start} {n_vis}")
+    rc3.go(1); rc3.go(1)
+    check('поиск: показан один блок', rc3.shown == 1 and rc3.win_start >= 0)
     check('ручная индексация: maybe_index не индексирует', (rc3.config.set('index_auto', 0), rc3.maybe_index(['bibl.txt']))[1] is False)
     check('длинный текст режется на куски', all(b - a <= rc3.MAX_CHARS for a, b in Controller.chunks('слово ' * 2000)) and
           Controller.chunks('слово ' * 2000)[-1][1] == len('слово ' * 2000))
