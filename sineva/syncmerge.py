@@ -55,6 +55,52 @@ def merge_marks(local_marks: List[dict], local_tombs: Dict[str, str], remote_jso
     return out, add, remove, tombs
 
 
+EXTRA_FILE = 'sineva_extra.json'      # размер, цвет и свои мысли: только мобильная версия (десктоп файл не читает)
+
+
+def merge_extra(local_recs: List[dict], local_tombs: Dict[str, str], remote_json: Optional[bytes]):
+    """Слияние слоёв (размер/цвет/мысли) по тому же правилу, что у подчёркиваний; у мысли побеждает более поздняя правка.
+       -> (JSON для папки, [записи добавить], [uid убрать], общие следы)."""
+    remote_recs, remote_tombs = [], {}
+    if remote_json:
+        try:
+            data = json.loads(remote_json.decode('utf-8'))
+            remote_recs, remote_tombs = list(data.get('records', [])), dict(data.get('deleted', {}))
+        except Exception as e:
+            raise ValueError(f"файл {EXTRA_FILE} повреждён: {e}")
+    tombs = dict(local_tombs)
+    for uid, at in remote_tombs.items():
+        if uid not in tombs or at > tombs[uid]:
+            tombs[uid] = at
+    local_by = {m['uid']: m for m in local_recs}
+    merged: Dict[str, dict] = {}
+    for m in list(remote_recs) + list(local_recs):
+        old = merged.get(m['uid'])
+        if old is None or (m.get('created') or '') > (old.get('created') or ''):
+            merged[m['uid']] = m
+    alive, dead = [], set()
+    for uid, m in merged.items():
+        t = tombs.get(uid)
+        if t is not None and t >= (m.get('created') or ''):
+            dead.add(uid)
+        else:
+            alive.append(m)
+    alive_uids = {m['uid'] for m in alive}
+    tombs = {u: t for u, t in tombs.items() if u not in alive_uids}
+    add, remove = [], [u for u in local_by if u in dead]
+    for m in alive:
+        mine = local_by.get(m['uid'])
+        if mine is None:
+            add.append(m)
+        elif mine != m:                                   # чужая версия новее (например, исправленный текст мысли)
+            remove.append(m['uid'])
+            add.append(m)
+    alive.sort(key=lambda m: (m.get('file_key', ''), m.get('created') or '', m['uid']))
+    out = json.dumps({'version': 1, 'records': alive, 'deleted': tombs}, ensure_ascii=False, indent=1,
+                     sort_keys=True).encode('utf-8')
+    return out, add, remove, tombs
+
+
 # ---------- тексты ----------
 
 def _records(data: bytes) -> List[bytes]:
@@ -155,6 +201,18 @@ def sync_all(folder, marks_store, local_files: Dict[str, str], base_dir: str, lo
     report['marks_added'], report['marks_removed'] = len(add), len(remove)
     if out != remote:
         folder.write(MARKS_FILE, out)
+    # слои: размер, цвет, мысли (если хранилище их умеет)
+    if hasattr(marks_store, 'extra_snapshot'):
+        recs, etombs = marks_store.extra_snapshot()
+        eremote = folder.read(EXTRA_FILE)
+        eout, eadd, eremove, etombs2 = merge_extra(recs, etombs, eremote)
+        if eremote and eout != eremote:
+            folder.write(EXTRA_FILE[:-5] + '.bak.json', eremote)
+        if eadd or eremove or etombs2 != etombs:
+            marks_store.extra_apply(eadd, eremove, etombs2)
+        report['extra_added'], report['extra_removed'] = len(eadd), len(eremove)
+        if eout != eremote:
+            folder.write(EXTRA_FILE, eout)
     # тексты
     for name, path in local_files.items():
         local = open(path, 'rb').read() if os.path.exists(path) else b''

@@ -160,6 +160,11 @@ def _desktop_chooser(on_paths):
     box.add_widget(fc)
     box.add_widget(row)
     pop = Popup(title='Выберите книги', content=box, size_hint=(0.95, 0.9))
+    try:
+        from .app import style_popup
+        style_popup(pop)
+    except Exception:
+        pass
     ok.bind(on_release=lambda *_: (pop.dismiss(), on_paths(list(fc.selection))))
     cancel.bind(on_release=lambda *_: pop.dismiss())
     pop.open()

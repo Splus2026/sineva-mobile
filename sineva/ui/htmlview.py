@@ -45,7 +45,7 @@ def kivy_to_html(markup: str) -> str:
     return ''.join(out)
 
 
-def atoms(text: str, hl, marks):
+def atoms(text: str, hl, marks, extra=()):
     """[(a, b, prio, mark)] — отрезки текста с одним стилем; слово и его пробел раздельно."""
     n = len(text)
     cuts = {0, n}
@@ -53,6 +53,7 @@ def atoms(text: str, hl, marks):
         cuts.update((s, e))
     for s, e in marks:
         cuts.update((s, e))
+    cuts.update(extra)
     for m in WORD_RE.finditer(text):
         cuts.add(m.start())
         cuts.add(m.start() + len(m.group().rstrip()))
@@ -68,18 +69,45 @@ def atoms(text: str, hl, marks):
     return res
 
 
+def _cov(spans, a, b):
+    return any(s <= a and b <= e for s, e in spans)
+
+
+def _note_html(item) -> str:
+    _pos, text, flags, nid = item
+    cls = ['nt']
+    if 'u' in flags:
+        cls.append('mk')
+    if 'b' in flags:
+        cls.append('bg')
+    if 'c' in flags:
+        cls.append('cl')
+    return f'<span class="{" ".join(cls)}" data-nid="{int(nid)}"> ({html.escape(text)})</span>'
+
+
 def card_html(card: dict, with_expand: bool = False) -> str:
-    """HTML одной карточки. Координаты data-a/data-b — позиции в card['text'] (как у Kivy-версии)."""
+    """HTML одной карточки. Координаты data-a/data-b — позиции в card['text'] (как у Kivy-версии).
+       Размер («+Шрифт») и цвет («+Цвет») действуют только внутри подчёркнутого; свои мысли — курсивом в скобках."""
     text = card['text']
-    parts = []
-    for a, b, prio, mark in atoms(text, card['hl'], card['marks']):
+    big, color, notes = card.get('big', ()), card.get('color', ()), card.get('notes', ())
+    extra = [x for sp_ in (big, color) for se in sp_ for x in se] + [n[0] for n in notes]
+    at = {}
+    for n in notes:
+        at.setdefault(min(max(n[0], 0), len(text)), []).append(n)
+    parts = [_note_html(n) for n in at.get(0, ())]
+    for a, b, prio, mark in atoms(text, card['hl'], card['marks'], extra):
         seg = text[a:b]
         cls = ['w'] if seg.strip() else ['s']
         if prio:
             cls.append(f'hl{min(prio, 2)}')
         if mark:
             cls.append('mk')
+            if _cov(big, a, b):
+                cls.append('bg')
+            if _cov(color, a, b):
+                cls.append('cl')
         parts.append(f'<span class="{" ".join(cls)}" data-a="{a}" data-b="{b}">{html.escape(seg)}</span>')
+        parts.extend(_note_html(n) for n in at.get(b, ()))
     key = html.escape(card['key'], quote=True)
     btn = ''
     if with_expand:
@@ -88,7 +116,7 @@ def card_html(card: dict, with_expand: bool = False) -> str:
             f'<div class="tx">{"".join(parts)}</div>{btn}</div>')
 
 
-def page_html(theme: Dict, font_px: int) -> str:
+def page_html(theme: Dict, font_px: int, step: int = 2) -> str:
     """Каркас страницы: стили темы и JS. Карточки подставляются командами setCards/appendCards/updateCard."""
     def css(rgba):
         return 'rgb(%d,%d,%d)' % tuple(int(round(c * 255)) for c in rgba[:3])
@@ -96,7 +124,7 @@ def page_html(theme: Dict, font_px: int) -> str:
     return PAGE.replace('__BG__', css(theme['BG'])).replace('__CARD__', css(theme['CARD'])) \
         .replace('__TXT__', body).replace('__MARK__', '#' + theme['MARK_COLOR']) \
         .replace('__HLTXT__', '#' + (theme['HL_TEXT'] or '000000')).replace('__ACCENT__', css(theme['ACCENT'])) \
-        .replace('__FONT__', str(int(font_px)))
+        .replace('__STYLE__', '#' + theme.get('STYLE_COLOR', '8a00a6')).replace('__STEP__', str(int(step))).replace('__FONT__', str(int(font_px)))
 
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
@@ -111,6 +139,10 @@ body{padding:6px;font-family:sans-serif}
 .mk{color:__MARK__;text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:2px}
 .hl1.mk,.hl2.mk{color:#0a2a8c}
 .sel{background:#9ec7ff;color:#000}
+.nt{font-style:italic}
+.cl{color:__STYLE__}
+.hl1.cl,.hl2.cl{color:#5a0070}
+.bg{font-size:calc(1em + __STEP__px)}
 button{display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:12px;border:0;border-radius:8px;
  background:__ACCENT__;color:#fff;font-size:16px}
 button.ex{padding:6px;font-size:14px;margin-top:6px;background:transparent;color:__ACCENT__;border:1px solid __ACCENT__}
@@ -124,10 +156,11 @@ document.addEventListener('click',function(e){
   var t=e.target;
   if(t.id==='more'){ ev.push({t:'more'}); return; }
   if(t.classList.contains('ex')){ ev.push({t:'expand',key:t.getAttribute('data-key')}); return; }
+  if(t.classList.contains('nt')){ ev.push({t:'note',nid:t.getAttribute('data-nid')}); return; }
   if(!t.classList.contains('w')){ clearAnchor(); return; }
   var card=t.closest('.card'); var key=card.getAttribute('data-key');
   var a=+t.getAttribute('data-a'), b=+t.getAttribute('data-b');
-  if(!anchor || anchor.key!==key){ clearAnchor(); t.classList.add('sel'); anchor={key:key,a:a,b:b,el:t}; return; }
+  if(!anchor || anchor.key!==key){ clearAnchor(); t.classList.add('sel'); anchor={key:key,a:a,b:b,el:t}; ev.push({t:'anchor',key:key,s:a,e:b}); return; }
   var s=Math.min(anchor.a,a), en=Math.max(anchor.b,b);
   clearAnchor();
   ev.push({t:'select',key:key,s:s,e:en});
@@ -147,7 +180,7 @@ window.SV={
     for(var i=0;i<els.length;i++){ if(els[i].getAttribute('data-key')===key){ els[i].outerHTML=h; return; } }
   },
   setMore:function(label){ var m=document.getElementById('more'); if(label){ m.textContent=label; m.style.display='block'; } else m.style.display='none'; },
-  setFont:function(px){ document.getElementById('fs').textContent='.tx{font-size:'+px+'px}'; },
+  setFont:function(px,step){ document.getElementById('fs').textContent='.tx{font-size:'+px+'px}.bg{font-size:calc(1em + '+(step||2)+'px)}'; },
   scrollTop:function(){ window.scrollTo(0,0); },
   take:function(){ var r=JSON.stringify(ev); ev=[]; return r; }
 };

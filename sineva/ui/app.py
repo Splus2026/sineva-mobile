@@ -29,19 +29,21 @@ from .picker import add_home_shortcut, pick_files, publish_shared, share_file
 from . import textmodel
 from .splash import Splash
 from . import htmlview, nativeview, safsync
-from .textmodel import atom_at, build_markup
+from .textmodel import atom_at, build_markup, note_at_point
 
 THEMES = {
     'day': dict(BG=(0.91, 0.94, 0.98, 1), CARD=(0.78, 0.85, 0.93, 1), TXT=(0.08, 0.13, 0.24, 1),
                 BODY=(0.05, 0.08, 0.15, 1), ACCENT=(0.25, 0.42, 0.66, 1), GRAY=(0.45, 0.5, 0.6, 1),
                 NAV=(0.84, 0.89, 0.96, 1), NAV_TXT=(0.25, 0.42, 0.66, 1), BTN2=(0.9, 0.93, 0.98, 1),
-                BTN2_TXT=(0.25, 0.42, 0.66, 1), INPUT_BG=(1, 1, 1, 1), MARK_RGBA=(0.04, 0.16, 0.55, 1), MARK_COLOR='0a2a8c', HL_TEXT=''),
+                BTN2_TXT=(0.25, 0.42, 0.66, 1), INPUT_BG=(1, 1, 1, 1), MARK_RGBA=(0.04, 0.16, 0.55, 1), MARK_COLOR='0a2a8c', HL_TEXT='',
+                POP_BG=(0.17, 0.25, 0.42, 1), PANEL_BG=(0.8, 0.86, 0.94, 1), STYLE_COLOR='8a00a6'),
     'night': dict(BG=(0.12, 0.13, 0.19, 1), CARD=(0.24, 0.29, 0.48, 1), TXT=(0.93, 0.94, 0.98, 1),
                   BODY=(0.93, 0.94, 0.98, 1), ACCENT=(0.33, 0.42, 0.7, 1), GRAY=(0.4, 0.43, 0.56, 1),
                   NAV=(0.09, 0.1, 0.15, 1), NAV_TXT=(0.75, 0.8, 0.96, 1), BTN2=(0.19, 0.22, 0.36, 1),
-                  BTN2_TXT=(0.8, 0.85, 1, 1), INPUT_BG=(0.17, 0.2, 0.32, 1), MARK_RGBA=(0.62, 0.78, 1, 1), MARK_COLOR='9ec7ff', HL_TEXT='000000'),
+                  BTN2_TXT=(0.8, 0.85, 1, 1), INPUT_BG=(0.17, 0.2, 0.32, 1), MARK_RGBA=(0.62, 0.78, 1, 1), MARK_COLOR='9ec7ff', HL_TEXT='000000',
+                  POP_BG=(0.21, 0.17, 0.35, 1), PANEL_BG=(0.17, 0.19, 0.31, 1), STYLE_COLOR='ff7aeb'),
 }
-INPUT_BG = BG = CARD = TXT = BODY = ACCENT = GRAY = NAV = NAV_TXT = BTN2 = BTN2_TXT = None
+POP_BG = PANEL_BG = INPUT_BG = BG = CARD = TXT = BODY = ACCENT = GRAY = NAV = NAV_TXT = BTN2 = BTN2_TXT = None
 
 
 def apply_theme(name):
@@ -49,10 +51,11 @@ def apply_theme(name):
     g = globals()
     t = THEMES.get(name, THEMES['day'])
     for k, v in t.items():
-        if k not in ('MARK_COLOR', 'HL_TEXT'):
+        if k not in ('MARK_COLOR', 'HL_TEXT', 'STYLE_COLOR'):
             g[k] = v
     textmodel.MARK_COLOR = t['MARK_COLOR']
     textmodel.HL_TEXT = t['HL_TEXT']
+    textmodel.STYLE_COLOR = t['STYLE_COLOR']
 
 
 apply_theme('day')
@@ -63,17 +66,26 @@ SEL_BLUE = (0.67, 0.8, 1, 1)             # выделение пальцем: #A
 SEPARATORS = ['N1000', 'N500', 'N2000', 'NS300', 'NS800', 'Numeric', 'ExcelRow1']
 
 
+def style_popup(pop):
+    """Окна поверх главного — другого оттенка (плоский фон POP_BG и акцентная линия под заголовком)."""
+    pop.background = ''
+    pop.background_color = POP_BG
+    pop.separator_color = ACCENT
+    pop.title_color = (1, 1, 1, 1)
+    return pop
+
+
 def top_popup(title, content, height):
     """Диалог в верхней части экрана (не выше половины): клавиатура снизу его не закрывает."""
     h = min(height, Window.height * 0.5)
-    return Popup(title=title, content=content, size_hint=(1, None), height=h, pos_hint={'top': 1},
-                 auto_dismiss=False, title_size=sp(15), separator_height=dp(2))
+    return style_popup(Popup(title=title, content=content, size_hint=(1, None), height=h, pos_hint={'top': 1},
+                             auto_dismiss=False, title_size=sp(15), separator_height=dp(2)))
 
 
 def tall_popup(title, content):
     """Диалог от верха экрана до строки вкладок Поиск/Книги/Ещё."""
-    pop = Popup(title=title, content=content, size_hint=(1, None), pos_hint={'top': 1},
-                auto_dismiss=False, title_size=sp(15), separator_height=dp(2))
+    pop = style_popup(Popup(title=title, content=content, size_hint=(1, None), pos_hint={'top': 1},
+                            auto_dismiss=False, title_size=sp(15), separator_height=dp(2)))
     fit = lambda *a: setattr(pop, 'height', max(dp(200), Window.height - dp(52)))
     fit()
     Window.bind(size=fit)
@@ -181,6 +193,13 @@ def clip_spans(spans, a, b):
     return [(max(s_, a) - a, min(e_, b) - a) for s_, e_ in spans if e_ > a and s_ < b]
 
 
+def clip_layers(layers, a, b):
+    """Слои всей карточки -> слои куска [a, b): подчёркнутое, шрифт, цвет и мысли (мысль — в куске, где она заканчивается)."""
+    return {'marks': clip_spans(layers['marks'], a, b), 'big': clip_spans(layers['big'], a, b),
+            'color': clip_spans(layers['color'], a, b),
+            'notes': [(p - a, t, f, i) for p, t, f, i in layers['notes'] if a < p <= b or (p == 0 and a == 0)]}
+
+
 class SelectableText(Label):
     """Текст топика: жёлтый маркер на найденных словах, подчёркнутое и выделение.
        Касание слова (без сдвига пальца) выделяет это слово, касание второго слова — весь фрагмент между ними;
@@ -188,10 +207,12 @@ class SelectableText(Label):
 
     TAP_MAX_MOVE = 12            # dp: больше — это уже прокрутка, а не касание
 
-    def __init__(self, card, on_select, on_hint=lambda t: None, font_pt=16, on_activate=lambda w: None, **kw):
+    def __init__(self, card, on_select, on_hint=lambda t: None, font_pt=16, on_activate=lambda w: None,
+                 on_note=None, on_anchor=None, step=2, **kw):
         kw.setdefault('color', BODY)
         super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(font_pt), **kw)
         self.card, self.on_select, self.on_hint, self.on_activate = card, on_select, on_hint, on_activate
+        self.on_note, self.on_anchor, self.font_pt, self.step = on_note, on_anchor, font_pt, step
         self.sel = None
         self.select_mode = False
         self._refs_info = {}
@@ -205,7 +226,9 @@ class SelectableText(Label):
     # --- разметка и подложки
     def _refresh(self):
         c = self.card
-        self.text, self._refs_info = build_markup(c['text'], c['hl'], c['marks'], self.sel, self.select_mode)
+        self.text, self._refs_info = build_markup(c['text'], c['hl'], c['marks'], self.sel, self.select_mode,
+                                                  c.get('big', ()), c.get('color', ()), c.get('notes', ()),
+                                                  self.font_pt, self.step)
 
     def _apply(self):
         """Один пересчёт текстуры после смены разметки."""
@@ -276,7 +299,38 @@ class SelectableText(Label):
             self._tap(touch.pos)
         return super().on_touch_up(touch)
 
+    def set_layers(self, layers, off):
+        """Новые слои (подчёркнутое, шрифт, цвет, мысли) для этого куска карточки."""
+        self.card.update(clip_layers(layers, off, off + len(self.card['text'])))
+
+    def _note_hit(self, pos):
+        ts = self.texture_size
+        tx = pos[0] - (self.center_x - ts[0] / 2.0)
+        ty = ts[1] - (pos[1] - (self.center_y - ts[1] / 2.0))
+        return note_at_point(self._refs_info, self.refs, tx, ty)
+
+    def focus_y(self, idx):
+        """Координата y в окне того места текста, где находится позиция idx (для прокрутки к нему)."""
+        ts = self.texture_size
+        oy = self.center_y + ts[1] / 2.0
+        best = None
+        for rid, boxes in self.refs.items():
+            info = self._refs_info.get(int(rid))
+            if not info or not boxes:
+                continue
+            if info['start'] <= idx <= info['end']:
+                best = boxes[0]
+                if info['start'] < idx < info['end'] or info['end'] > info['start']:
+                    break
+        if best is None:
+            return None
+        return self.to_window(self.x, oy - (best[1] + best[3]) / 2.0)[1]
+
     def _tap(self, pos):
+        nid = self._note_hit(pos)
+        if nid is not None and self.on_note is not None:      # касание своей мысли
+            self.on_note(nid, self)
+            return
         if not self.select_mode:                  # первое касание карточки: слова становятся «нажимаемыми»
             self.on_activate(self)                # у остальных карточек выделение сбрасывается
             self.select_mode = True
@@ -289,6 +343,9 @@ class SelectableText(Label):
             self.sel = word
             self._apply()
             self.on_hint('Нажмите последнее слово фрагмента (то же слово — выделить одно)')
+            if self.on_anchor is not None:
+                off = self.card.get('offset', 0)
+                self.on_anchor(self.card['key'], word[0] + off, word[1] + off, self)
             return
         sel = (min(self._anchor[0], word[0]), max(self._anchor[1], word[1]))
         self._anchor = None
@@ -389,11 +446,18 @@ class SearchScreen(Screen):
         self.status_slot.bind(height=lambda w, h: setattr(status_row, 'height', h))
         status_row.height = self.status_slot.height
         root.add_widget(status_row)
-        self.undo_btn = Button(text='Отменить выделение', size_hint_y=None, height=dp(37), background_normal='',
-                               background_color=ACCENT, color=(1, 1, 1, 1), font_size=sp(16))
+        self.actions = BoxLayout(size_hint_y=None, height=dp(37), spacing=dp(3))
+        self.undo_btn = Button(text='Отмена', size_hint_x=0.62, background_normal='', background_color=ACCENT,
+                               color=(1, 1, 1, 1), font_size=sp(14))
         self.undo_btn.bind(on_release=lambda *_: self.app.undo_mark())
-        top.bind(height=lambda w, h: setattr(self.undo_btn, 'height', h * 2 / 3))   # 2/3 высоты кнопки «Поиск»
-        self.undo_btn.height = top.height * 2 / 3
+        self.actions.add_widget(self.undo_btn)
+        for label, cb in (('+Шрифт', lambda: self.app.apply_style('big')), ('+Цвет', lambda: self.app.apply_style('color')),
+                          ('+Мысли', lambda: self.app.open_note_editor())):
+            b_ = Button(text=label, background_normal='', background_color=ACCENT, color=(1, 1, 1, 1), font_size=sp(14))
+            b_.bind(on_release=lambda *_, cb=cb: cb())
+            self.actions.add_widget(b_)
+        top.bind(height=lambda w, h: setattr(self.actions, 'height', h * 2 / 3))   # 2/3 высоты кнопки «Поиск»
+        self.actions.height = top.height * 2 / 3
         if self._native_on:
             self.holder = Widget()                       # место под WebView: он лежит поверх этого виджета
             root.add_widget(self.holder)
@@ -405,7 +469,7 @@ class SearchScreen(Screen):
     def _nl(self):
         if self.native is None:
             t = THEMES.get(self.ctl.config.get('theme', 'day'), THEMES['day'])
-            self.native = nativeview.NativeList(htmlview.page_html(t, self.ctl.config.get_int('font_size', 16)),
+            self.native = nativeview.NativeList(htmlview.page_html(t, self.ctl.config.get_int('font_size', 16), self.ctl.font_step()),
                                                 self._on_native, t['BG'][:3])
             self._tick_ev = Clock.schedule_interval(self._tick, 0.15)
         return self.native
@@ -439,17 +503,13 @@ class SearchScreen(Screen):
         for e in events:
             t = e.get('t')
             if t == 'select':
-                key = e['key']
-                card = ctl.card_dict(key)
-                if card is None:
-                    continue
-                text = card['text'][e['s']:e['e']].strip()
-                result = ctl.toggle_mark(key, e['s'], e['e'], text)
-                self.refresh_card(key)
-                if result == 'marked':
-                    ctl.on_status('Подчёркнуто и записано в конспект')
-                elif result == 'unmarked':
-                    ctl.on_status('Подчёркивание снято')
+                card = ctl.card_dict(e['key'])
+                if card is not None:
+                    self.app.sel_done(e['key'], e['s'], e['e'], card['text'][e['s']:e['e']].strip())
+            elif t == 'anchor':
+                self.app.on_anchor(e['key'], e['s'], e['e'], None)
+            elif t == 'note':
+                self.app.on_note_tap(int(e['nid']))
             elif t == 'more':
                 ctl.show_more()
             elif t == 'expand':
@@ -482,9 +542,9 @@ class SearchScreen(Screen):
         self.status.text = escape_markup(self._base + self._suffix)
 
     def set_undo(self, visible):
-        """После выделения вместо строки состояния — кнопка «Отменить выделение»."""
+        """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
         self.status_slot.clear_widgets()
-        self.status_slot.add_widget(self.undo_btn if visible else self.status)
+        self.status_slot.add_widget(self.actions if visible else self.status)
 
     def search(self):
         self.input.focus = False
@@ -577,10 +637,37 @@ class SearchScreen(Screen):
             if self.native is not None:
                 self.native.call(htmlview.js_call('setCards', ''))
                 self.native.call(htmlview.js_call('setMore', ''))
-                self.native.call(htmlview.js_call('setFont', self.ctl.config.get_int('font_size', 16)))
+                self.native.call(htmlview.js_call('setFont', self.ctl.config.get_int('font_size', 16), self.ctl.font_step()))
             return
         self.box.clear_widgets()
         self._keys, self._cards, self._widgets, self._more_btn = [], [], {}, None
+
+    def reveal(self, key, pos):
+        """Показать на экране место карточки key (позиция pos в её тексте): прокрутка, если оно вне видимой части."""
+        if self.native is not None or self._native_on:
+            return
+        target = None
+        for w in self._widgets.get(key, []):
+            off = w.card.get('offset', 0)
+            if off <= pos <= off + len(w.card['text']):
+                target = (w, pos - off)
+                break
+        if target is None:
+            return
+
+        def go(dt):
+            y = target[0].focus_y(target[1])
+            sv = self.sv
+            content = sv.children[0] if sv.children else None
+            if y is None or content is None or content.height <= sv.height:
+                return
+            bottom = sv.to_window(sv.x, sv.y)[1]
+            margin = dp(60)
+            if bottom + margin <= y <= bottom + sv.height - margin:
+                return
+            dy = (bottom + sv.height / 2.0) - y                  # на сколько сдвинуть содержимое вверх
+            sv.scroll_y = min(1, max(0, sv.scroll_y - dy / (content.height - sv.height)))
+        Clock.schedule_once(go, 0.15)
 
     def _activate(self, widget):
         if self._active is not None and self._active is not widget:
@@ -597,9 +684,10 @@ class SearchScreen(Screen):
         for a_, b_ in c['chunks']:                    # длинный текст — несколькими виджетами подряд
             sub = dict(c, text=c['text'][a_:b_], offset=a_,
                        hl=[(max(s_, a_) - a_, min(e_, b_) - a_, p_) for s_, e_, p_ in c['hl'] if e_ > a_ and s_ < b_],
-                       marks=clip_spans(c['marks'], a_, b_))
+                       **clip_layers(c, a_, b_))
             w = SelectableText(sub, self.app.on_selection, self.ctl.on_status,
-                               self.ctl.config.get_int('font_size', 16), self._activate)
+                               self.ctl.config.get_int('font_size', 16), self._activate,
+                               on_note=self.app.on_note_tap, on_anchor=self.app.on_anchor, step=self.ctl.font_step())
             parts.append(w)
             box.add_widget(w)
         self._widgets[key] = parts
@@ -891,6 +979,28 @@ def segmented(options, current, on_pick):
     return row
 
 
+class ChevronButton(Button):
+    """Кнопка-раскрывашка: справа нарисован крупный шеврон (вниз — закрыто, вверх — раскрыто)."""
+    def __init__(self, text, **kw):
+        super().__init__(text=text, **kw)
+        self.opened = False
+        self.bind(pos=self._draw, size=self._draw)
+
+    def set_open(self, v):
+        self.opened = v
+        self._draw()
+
+    def _draw(self, *a):
+        from kivy.graphics import Line
+        self.canvas.after.clear()
+        s = dp(9)
+        cx, cy = self.right - dp(28), self.center_y
+        d = s / 2 if self.opened else -s / 2
+        with self.canvas.after:
+            Color(1, 1, 1, 1)
+            Line(points=[cx - s, cy - d, cx, cy + d, cx + s, cy - d], width=dp(2.6), cap='round', joint='round')
+
+
 class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name='settings', **kw)
@@ -913,9 +1023,23 @@ class SettingsScreen(Screen):
         col.add_widget(divider())
         col.add_widget(btn('Экспорт', self.app.open_export, color=GRAY))
         col.add_widget(divider())
-        self.set_btn = btn('Настройки ▾', self.toggle_settings, color=GRAY)
+        self.set_btn = ChevronButton('Настройки', size_hint_y=None, height=dp(44), background_normal='',
+                                     background_color=GRAY, color=(1, 1, 1, 1))
+        self.set_btn.bind(on_release=lambda *_: self.toggle_settings())
         col.add_widget(self.set_btn)
         self.set_box = BoxLayout(orientation='vertical', size_hint_y=None, height=0, spacing=dp(6))
+        self.set_box.bind(minimum_height=self.set_box.setter('height'))      # высота по содержимому: надписи не наезжают на кнопки
+        from kivy.graphics import Rectangle as _R
+        with self.set_box.canvas.before:
+            Color(*PANEL_BG)
+            self._panel = _R()
+            Color(*ACCENT)
+            self._bar = _R()
+
+        def lay(*_):
+            self._panel.pos, self._panel.size = self.set_box.pos, self.set_box.size
+            self._bar.pos, self._bar.size = self.set_box.pos, (dp(4) if self.set_box.children else 0, self.set_box.height)
+        self.set_box.bind(pos=lay, size=lay)
         col.add_widget(self.set_box)
         col.add_widget(btn('О программе', self.app.open_about, color=GRAY))
         sv = ScrollView()
@@ -926,14 +1050,23 @@ class SettingsScreen(Screen):
         """Скрытые элементы не лежат в разметке (иначе перехватывали бы нажатия)."""
         if self.set_box.children:
             self.set_box.clear_widgets()
+            self.set_box.padding = 0
             self.set_box.height = 0
-            self.set_btn.text = 'Настройки ▾'
+            self.set_btn.set_open(False)
+            self.set_btn.background_color = GRAY
             return
+        self.set_box.padding = (dp(12), dp(8), dp(8), dp(8))
         self.set_box.add_widget(mlabel('Текст блоков'))
         self.set_box.add_widget(segmented(
             [('Полный', 0), ('Краткий', 1)], 1 if self.ctl.config.get_bool('brief_view', False) else 0,
             lambda v: (self.ctl.set_setting('brief_view', v), self.ctl.reset_views(),
                        self.ctl.on_status("Вид текста изменён: повторите поиск или откройте «Чтение»"))))
+        step = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        self._step_label = mlabel(f"«+Шрифт»: на {self.ctl.font_step()}")
+        step.add_widget(self._step_label)
+        step.add_widget(btn('−', lambda: self.step(-1), size_hint_x=None, width=dp(60)))
+        step.add_widget(btn('+', lambda: self.step(1), size_hint_x=None, width=dp(60)))
+        self.set_box.add_widget(step)
         self.set_box.add_widget(mlabel('Индексация'))
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
@@ -960,9 +1093,15 @@ class SettingsScreen(Screen):
             extra_btn = 2
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
         self.set_box.add_widget(btn('Пароль', self.app.open_password, color=GRAY))
-        n = 2 + self._extra
-        self.set_box.height = dp(26) * n + dp(44) * (4 + self._extra + extra_btn) + dp(6) * (5 + 2 * self._extra + extra_btn)
-        self.set_btn.text = 'Настройки ▴'
+        self.set_btn.set_open(True)
+        self.set_btn.background_color = ACCENT
+
+    def step(self, delta):
+        v = min(10, max(1, self.ctl.font_step() + delta))
+        self.ctl.set_setting('font_step', v)
+        self._step_label.text = f"«+Шрифт»: на {v}"
+        self.ctl.reset_views()
+        self.ctl.on_status('Шаг шрифта изменён: повторите поиск или откройте «Чтение»')
 
     def pick_sync(self):
         def got(uri):
@@ -1069,7 +1208,7 @@ class SinevaApp(App):
         c.on_books = self.books_s.show_books
         c.on_progress = self.books_s.show_progress
         c.on_reset = lambda: (self.search_s.clear(), self.read_s.clear())
-        c.on_undo = lambda n: (self.search_s.set_undo(n > 0), self.read_s.set_undo(n > 0))
+        c.on_undo = self._on_undo_count
         c.on_sync = self.sync_dialog
         c.on_ask_continue = self.ask_continue
 
@@ -1096,16 +1235,198 @@ class SinevaApp(App):
     def native_wanted(self):
         return nativeview.available() and self.ctl.config.get('render', 'kivy') == 'native'
 
-    def undo_mark(self):
-        key = self.ctl.undo_last_mark()
-        if key:
-            for scr in (self.search_s, self.read_s):
-                scr.refresh_card(key)
-            for scr in (self.search_s, self.read_s):
-                for w in scr._widgets.get(key, []):
-                    off = w.card.get('offset', 0)
-                    w.card['marks'] = clip_spans(self.ctl.card_marks(key), off, off + len(w.card['text']))
+    # ---------- слои текста: подчёркивание, «+Шрифт», «+Цвет», «+Мысли» ----------
+    cur_sel = None                  # последнее выделение: {'key', 's', 'e'} — в координатах текста карточки
+    _undo_n = 0
+
+    def _on_undo_count(self, n):
+        self._undo_n = n
+        self.refresh_actions()
+
+    def refresh_actions(self):
+        """Кнопки «Отмена / +Шрифт / +Цвет / +Мысли» видны, пока есть что отменять или выделено слово."""
+        on = self._undo_n > 0 or self.cur_sel is not None
+        for scr in (self.search_s, self.read_s):
+            scr.set_undo(on)
+
+    def refresh_layers(self, key=None):
+        """Перерисовать слои карточки key (None — всех показанных)."""
+        for scr in (self.search_s, self.read_s):
+            keys = [key] if key else list(scr._widgets) or list(getattr(scr, '_keys', []))
+            for k in keys:
+                if scr.native is not None or scr._native_on:
+                    scr.refresh_card(k)
+                    continue
+                layers = self.ctl.card_layers(k)
+                for w in scr._widgets.get(k, []):
+                    w.set_layers(layers, w.card.get('offset', 0))
                     w.refresh()
+
+    def on_anchor(self, key, ds, de, widget):
+        self.cur_sel = {'key': key, 's': ds, 'e': de}
+        self.refresh_actions()
+
+    def undo_mark(self):
+        if not self.ctl.undo_stack:                         # нечего откатывать — просто снять выделение
+            key = self.cur_sel['key'] if self.cur_sel else None
+            self.cur_sel = None
+            self.refresh_layers(key)
+            self.refresh_actions()
+            return
+        key = self.ctl.undo_last_mark()
+        self.cur_sel = None
+        if key:
+            self.refresh_layers(key)
+        self.refresh_actions()
+
+    def on_selection(self, key, start, end, widget):
+        off = widget.card.get('offset', 0)                  # длинный текст состоит из нескольких кусков
+        self.sel_done(key, start + off, end + off, widget.card['text'][start:end].strip())
+
+    def sel_done(self, key, ds, de, text):
+        """Выделен фрагмент (первое и последнее слово). Не подчёркнут — подчёркиваем и пишем в конспект;
+           уже подчёркнут — диалог: снять выделение / +Шрифт / +Цвет / Отмена."""
+        self.cur_sel = {'key': key, 's': ds, 'e': de}
+        if self.ctl.selection_marked(key, ds, de):
+            self.open_range_dialog()
+            return
+        result = self.ctl.toggle_mark(key, ds, de, text)
+        self.refresh_layers(key)
+        if result == 'marked':
+            self.ctl.on_status('Подчёркнуто и записано в конспект. Дальше можно «+Шрифт» и «+Цвет»')
+        self.refresh_actions()
+
+    def _choice(self, title, rows, width_hint=1):
+        """Небольшое окно с кнопками: rows — [(текст, действие, цвет)] или строки из таких списков."""
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        lines = [r if isinstance(r, list) else [r] for r in rows]
+        pop = top_popup(title, box, dp(60) + dp(50) * len(lines))
+        for line in lines:
+            row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+            for item in line:
+                label, fn, color = item
+                b_ = btn(label, lambda fn=fn: (pop.dismiss(), fn()), color=color, markup=True)
+                row.add_widget(b_)
+            box.add_widget(row)
+        pop.open()
+        return pop
+
+    def open_range_dialog(self):
+        cs = self.cur_sel
+        if not cs:
+            return
+
+        def unmark():
+            text = ''
+            result = self.ctl.toggle_mark(cs['key'], cs['s'], cs['e'], text)
+            self.refresh_layers(cs['key'])
+            if result == 'unmarked':
+                self.ctl.on_status('Подчёркивание снято')
+            self.refresh_actions()
+
+        def cancel():
+            self.cur_sel = None
+            self.refresh_layers(cs['key'])
+            self.refresh_actions()
+        self._choice('Подчёркнутый фрагмент', [
+            ('Снять выделение', unmark, ACCENT),
+            [('+Шрифт', lambda: self.apply_style('big'), ACCENT), ('+Цвет', lambda: self.apply_style('color'), ACCENT)],
+            ('Отмена', cancel, GRAY)])
+
+    def apply_style(self, kind):
+        cs = self.cur_sel
+        if not cs:
+            self.ctl.on_status('Сначала нажмите первое и последнее слово фрагмента')
+            return
+        result = self.ctl.style_selection(kind, cs['key'], cs['s'], cs['e'])
+        name = 'шрифт' if kind == 'big' else 'цвет'
+        if result == 'need_mark':
+            self.ctl.on_status('Шрифт и цвет — только внутри подчёркнутого: сначала подчеркните фрагмент')
+            return
+        if result is None:
+            self.ctl.on_status('Не удалось выделить: попробуйте ещё раз')
+            return
+        self.refresh_layers(cs['key'])
+        for scr in (self.search_s, self.read_s):
+            scr.reveal(cs['key'], cs['s'])                  # изменённое место всегда остаётся на экране
+        self.ctl.on_status(('Добавлен ' if result == 'on' else 'Снят ') + name)
+        self.refresh_actions()
+
+    # ---------- свои мысли ----------
+    def open_note_editor(self, nid=None):
+        """Окно ввода мыслей к выделенному слову (nid — правка уже сохранённой мысли)."""
+        ctl = self.ctl
+        cs = self.cur_sel
+        note = ctl.note_info(nid) if nid else None
+        if note is None and not cs:
+            ctl.on_status('Сначала нажмите слово, к которому относится мысль')
+            return
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        field = no_bubble(TextInput(text=note.text if note else '', hint_text='Ваши мысли к этому слову',
+                                    multiline=True, font_size=sp(16)))
+        box.add_widget(field)
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        pop = top_popup('Мои мысли' if not note else 'Правка мысли', box, dp(230))
+
+        def save():
+            text = field.text.strip()
+            if not text:
+                return
+            if note:
+                key = ctl.edit_note_text(nid, text)
+            else:
+                key = cs['key'] if ctl.add_note(cs['key'], cs['s'], cs['e'], text) else None
+            pop.dismiss()
+            self.refresh_layers(key)
+            if key and cs:
+                for scr in (self.search_s, self.read_s):
+                    scr.reveal(key, cs['e'])
+            self.refresh_actions()
+
+        def delete():
+            key = ctl.delete_note(nid)
+            pop.dismiss()
+            self.refresh_layers(key)
+            self.refresh_actions()
+        row.add_widget(btn('Сохранить', save))
+        if note:
+            row.add_widget(btn('Удалить', delete, color=GRAY))
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        box.add_widget(row)
+        pop.open()
+        Clock.schedule_once(lambda dt: setattr(field, 'focus', True), 0.2)
+
+    def on_note_tap(self, nid, widget=None):
+        """Касание курсивной мысли: подчеркнуть (Ч) / +Шрифт / +Цвет / правка (карандаш)."""
+        note = self.ctl.note_info(nid)
+        if note is None:
+            return
+        flags = note.flags or ''
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
+        box.add_widget(mlabel(escape_markup(note.text), color=(1, 1, 1, 1), font_size=sp(14)))
+        pop = top_popup('Моя мысль', box, dp(220) + min(len(note.text), 200))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+
+        def flag(f):
+            key = self.ctl.toggle_note_flag(nid, f)
+            self.refresh_layers(key)
+            if key:
+                for scr in (self.search_s, self.read_s):
+                    scr.reveal(key, note_pos(key))
+            self.refresh_actions()
+
+        def note_pos(key):
+            for p_, _t, _f, i_ in self.ctl.card_layers(key)['notes']:
+                if i_ == nid:
+                    return p_
+            return 0
+        for label, f in (('[u][b]Ч[/b][/u]', 'u'), ('+Шрифт', 'b'), ('+Цвет', 'c')):
+            row.add_widget(btn(label, lambda f=f: (pop.dismiss(), flag(f)), markup=True,
+                               color=ACCENT if f in flags else GRAY))
+        row.add_widget(icon_button(PencilIcon(), lambda: (pop.dismiss(), self.open_note_editor(nid)), dp(56), BTN2))
+        box.add_widget(row)
+        box.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        pop.open()
 
     def go_tab(self, name):
         if self.sm.current != name:
@@ -1119,20 +1440,6 @@ class SinevaApp(App):
             return True
         self.ctl.rescan()
         return True
-
-    # ---------- выделенный фрагмент: автоподчёркивание + меню ----------
-    def on_selection(self, key, start, end, widget):
-        """Без подтверждений: новое выделение подчёркивается и дублируется в конспект,
-           повторное выделение подчёркнутого снимает подчёркивание."""
-        off = widget.card.get('offset', 0)                  # длинный текст состоит из нескольких кусков
-        text = widget.card['text'][start:end].strip()
-        result = self.ctl.toggle_mark(key, start + off, end + off, text)
-        widget.card['marks'] = clip_spans(self.ctl.card_marks(key), off, off + len(widget.card['text']))
-        widget.clear_selection()                            # обновляется только этот кусок карточки
-        if result == 'marked':
-            self.ctl.on_status('Подчёркнуто и записано в конспект')
-        elif result == 'unmarked':
-            self.ctl.on_status('Подчёркивание снято')
 
     def open_about(self):
         box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
@@ -1195,7 +1502,7 @@ class SinevaApp(App):
         box.add_widget(field)
         msg = Label(text='', color=(1, 0.6, 0.6, 1), size_hint_y=None, height=dp(28))
         box.add_widget(msg)
-        pop = Popup(title='', content=box, size_hint=(1, 1), auto_dismiss=False, separator_height=0)
+        pop = style_popup(Popup(title='', content=box, size_hint=(1, 1), auto_dismiss=False, separator_height=0))
 
         def enter(*_):
             if self.ctl.check_password(field.text):
@@ -1325,7 +1632,7 @@ class SinevaApp(App):
     def open_export(self):
         """Окно «Экспорт» на весь экран: что экспортировать + список ранее экспортированных файлов."""
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
-        pop = Popup(title='Экспорт', content=box, size_hint=(1, 1), auto_dismiss=False, title_size=sp(16))
+        pop = style_popup(Popup(title='Экспорт', content=box, size_hint=(1, 1), auto_dismiss=False, title_size=sp(16)))
         state = {'sel': None}
         listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
         listing.bind(minimum_height=listing.setter('height'))
@@ -1365,11 +1672,12 @@ class SinevaApp(App):
                     self.ctl.on_status(f"Сохранено: {path}")
 
         box.add_widget(mlabel('Что экспортировать:', color=(1, 1, 1, 1)))
-        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(4 * 46), spacing=dp(6))
+        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(5 * 46), spacing=dp(6))
         for label, fn in (('Подчёркнутое (TXT)', lambda: self.ctl.export_marks('txt')),
                           ('Подчёркнутое (Word, DOCX)', lambda: self.ctl.export_marks('docx')),
                           ('Конспект', self.ctl.export_conspect),
-                          ('Дневник', self.ctl.export_diary)):
+                          ('Дневник', self.ctl.export_diary),
+                          ('Мои мысли', self.ctl.export_notes)):
             grid.add_widget(btn(label, lambda fn=fn: do(fn)))
         box.add_widget(grid)
         box.add_widget(mlabel('Экспортированные файлы (последние сверху). Значок справа — отправить '

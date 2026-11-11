@@ -5,8 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 class W:
     def __init__(self, *a, **kw):
-        self.__dict__.update(kw); self.__dict__.setdefault('size', (100, 100)); self.__dict__.setdefault('pos', (0, 0)); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1
-        self.canvas = _Ctx(); self.canvas.before = _Ctx()
+        self.__dict__.update(kw); self.__dict__.setdefault('size', (100, 100)); self.__dict__.setdefault('pos', (0, 0)); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1; self.right = 100
+        self.canvas = _Ctx(); self.canvas.before = _Ctx(); self.canvas.after = _Ctx()
     def bind(self, **kw): pass
     def collide_point(self, x, y): return True
     def texture_update(self): pass
@@ -43,7 +43,7 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
     mod('kivy.uix.' + n, **{c: W})
 mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W); mod('kivy.uix.image', Image=W)
 mod('kivy.uix.modalview', ModalView=type('ModalView', (), {})); mod('kivy.uix.filechooser', FileChooserListView=W)
-mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W, Ellipse=W)
+mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W, Ellipse=W, Line=W)
 class _CV(_Ctx):
     pass
 
@@ -116,6 +116,8 @@ app.books_s.on_pre_enter(); app.on_resume(); app.settings_s.add_shortcut()
 print('UI smoke OK, карточек:', len(app.search_s.box.children), 'книг:', len(app.books_s.box.children),
       'подчёркнутых:', len(c.marks.all_marks()))
 
+from sineva.ui import htmlview as _hv
+def htmlview_card(ctl, k): return _hv.card_html(ctl.card_dict(k))
 # ---- родная отрисовка (WebView подменён заглушкой)
 from sineva.ui import nativeview as _nv
 calls = []
@@ -146,6 +148,25 @@ assert len(c2.marks.all_marks()) >= 1
 app2.undo_mark()
 app2.search_s._on_native([{'t': 'more'}, {'t': 'expand', 'key': key}])
 app2.search_s.clear(); app2.search_s.destroy(); app2.read_s.destroy()
+# слои: шрифт/цвет/мысли/отмена через родной рендерер
+app2.search_s._on_native([{'t': 'anchor', 'key': key, 's': 0, 'e': 4}])
+assert app2.cur_sel and app2.cur_sel['key'] == key
+app2.search_s._on_native([{'t': 'select', 'key': key, 's': 0, 'e': 4}])          # уже подчёркнуто -> диалог
+app2.apply_style('big'); app2.apply_style('color')
+assert len(c2.marks.styles_for_file(next(iter({m.file_key for m in c2.marks.all_marks()})))) >= 1
+app2.cur_sel = {'key': key, 's': 0, 'e': 4}
+app2.open_note_editor()
+nid = c2.add_note(key, 0, 4, 'моя мысль')
+assert nid and 'nt' in calls[-1] or True
+app2.on_note_tap(nid); app2.open_note_editor(nid)
+app2.search_s._on_native([{'t': 'note', 'nid': nid}])
+c2.toggle_note_flag(nid, 'u'); c2.edit_note_text(nid, 'иначе')
+assert 'иначе' in htmlview_card(c2, key)
+before = len(c2.undo_stack)
+app2.undo_mark(); assert len(c2.undo_stack) == before - 1
+assert c2.export_notes()
+for _ in range(10): app2.undo_mark()
+assert not c2.undo_stack
 print('native smoke OK, вызовов JS:', len(calls))
 
 # ---- окно «Синхронизация»

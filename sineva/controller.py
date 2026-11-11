@@ -359,14 +359,14 @@ class Controller:
     def _card(self, i: int, key: str, item: dict, brief: bool, expanded: bool) -> dict:
         content = item['content']
         text, hl, segments, paging = self._view(key, item, brief)
-        spans = []
-        for _m, cs, ce in marks_mod.find_mark_spans(content, self.marks.marks_for_file(marks_mod.file_key(item['book']))):
-            spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
+        layers = self._layers(item, segments)
+        spans = layers['marks']
         header = (f"[b]Блок {item['ordinal']}[/b] [size=12sp][color=777777]из {self.reading['total']} · "
                   f"поз. {escape_markup(str(item.get('position', '')))}[/color][/size]") if self.reading and 'ordinal' in item \
             else self.search.header_markup(item, i + 1)
         return {'key': key, 'book': item['book'], 'header': header,
-                'text': text, 'hl': [tuple(x) for x in hl], 'marks': sorted(spans), 'segments': segments,
+                'text': text, 'hl': [tuple(x) for x in hl], 'marks': spans, 'segments': segments,
+                'big': layers['big'], 'color': layers['color'], 'notes': layers['notes'],
                 'expanded': expanded, 'chunks': self.chunks(text), 'source': self._source_label(item['book'])}
 
     def _source_label(self, file_name: str) -> str:
@@ -399,17 +399,37 @@ class Controller:
             return None, []
         return item, marks_mod.display_span_to_content(self._segments(key, item), ds, de)
 
-    def card_marks(self, key: str):
-        """Подчёркнутые участки одной карточки в координатах её текста — чтобы обновить только её, а не весь список."""
+    def _layers(self, item: dict, segments) -> dict:
+        """Подчёркнутое, «+Шрифт», «+Цвет» и свои мысли одной карточки — в координатах её текста на экране."""
+        content, fkey = item['content'], marks_mod.file_key(item['book'])
+
+        def spans(records):
+            out = []
+            for _m, cs, ce in marks_mod.find_mark_spans(content, records):
+                out.extend(marks_mod.content_span_to_display(segments, cs, ce))
+            return sorted(out)
+        notes = []
+        for nt, cs, ce in marks_mod.find_mark_spans(content, self.marks.notes_for_file(fkey)):
+            shown = marks_mod.content_span_to_display(segments, cs, ce)
+            if shown:
+                notes.append((shown[-1][1], nt.text or '', nt.flags or '', nt.id))
+        return {'marks': spans(self.marks.marks_for_file(fkey)),
+                'big': spans(self.marks.styles_for_file(fkey, 'big')),
+                'color': spans(self.marks.styles_for_file(fkey, 'color')),
+                'notes': sorted(notes)}
+
+    def card_layers(self, key: str) -> dict:
+        """Слои одной карточки — чтобы обновить только её, а не весь список."""
         item = self._find_item(key)
         if item is None:
-            return []
-        segments = self._segments(key, item)
-        spans = []
-        located = marks_mod.find_mark_spans(item['content'], self.marks.marks_for_file(marks_mod.file_key(item['book'])))
-        for _m, cs, ce in located:
-            spans.extend(marks_mod.content_span_to_display(segments, cs, ce))
-        return sorted(spans)
+            return {'marks': [], 'big': [], 'color': [], 'notes': []}
+        return self._layers(item, self._segments(key, item))
+
+    def card_marks(self, key: str):
+        return self.card_layers(key)['marks']
+
+    def font_step(self) -> int:
+        return max(1, self.config.get_int('font_step', 2))
 
     def selection_marked(self, key: str, ds: int, de: int) -> bool:
         """Выделенное уже целиком подчёркнуто?"""
@@ -466,40 +486,184 @@ class Controller:
                 fields = marks_mod.span_fields(content, s_, e_)
                 if fields:
                     self.marks.add_mark(file_name, *fields)
+            self._subtract_styles(item, cs2, ce2)            # размер и цвет живут только внутри подчёркнутого
             changed = True
         if changed and publish:
             self._publish()
         return changed
 
+    def _subtract_styles(self, item: dict, cs: int, ce: int) -> None:
+        content, file_name = item['content'], item['book']
+        for kind in marks_mod.STYLE_KINDS:
+            located = marks_mod.find_mark_spans(content, self.marks.styles_for_file(marks_mod.file_key(file_name), kind))
+            info = marks_mod.analyze_span(content, located, cs, ce)
+            if info is None or not info[2]:
+                continue
+            delete_ids, keep = marks_mod.plan_remove(content, info[0], info[1], info[2])
+            self.marks.delete_styles(delete_ids)
+            for s_, e_ in keep:
+                fields = marks_mod.span_fields(content, s_, e_)
+                if fields:
+                    self.marks.add_style(file_name, kind, *fields)
+
+    # ---------- «+Шрифт» и «+Цвет»: только внутри подчёркнутого ----------
+    def _push_undo(self, key: str, item: Optional[dict], what: str, snap=None, conspect_size=None) -> None:
+        if item is None or snap is None:
+            return
+        self.undo_stack.append({'key': key, 'file_name': item['book'], 'snap': snap, 'what': what,
+                                'conspect_size': conspect_size})
+        del self.undo_stack[:-self.UNDO_DEPTH]
+        self.on_undo(len(self.undo_stack))
+
+    UNDO_DEPTH = 7             # сколько последних действий можно откатить кнопкой «Отмена»
+
+    def style_selection(self, kind: str, key: str, ds: int, de: int) -> Optional[str]:
+        """Выделенное внутри подчёркнутого получает «+Шрифт» (kind='big') или «+Цвет' ('color'); повторно — снимается.
+           Возвращает 'on' / 'off' / 'need_mark' (выделено не внутри подчёркнутого) / None."""
+        item, pieces = self._content_pieces(key, ds, de)
+        if item is None or not pieces:
+            return None
+        content, file_name = item['content'], item['book']
+        fkey = marks_mod.file_key(file_name)
+        located_marks = marks_mod.find_mark_spans(content, self.marks.marks_for_file(fkey))
+        spans = []
+        for cs, ce in pieces:
+            info = marks_mod.analyze_span(content, located_marks, cs, ce)
+            if info is None:
+                continue
+            if not info[3]:
+                return 'need_mark'
+            spans.append((info[0], info[1]))
+        if not spans:
+            return None
+        snap = self.marks.snapshot_file(file_name)
+        located = marks_mod.find_mark_spans(content, self.marks.styles_for_file(fkey, kind))
+        infos = [marks_mod.analyze_span(content, located, cs, ce) for cs, ce in spans]
+        if all(i is not None and i[3] for i in infos):                    # всё уже оформлено — снимаем
+            for cs, ce in spans:
+                located = marks_mod.find_mark_spans(content, self.marks.styles_for_file(fkey, kind))
+                info = marks_mod.analyze_span(content, located, cs, ce)
+                delete_ids, keep = marks_mod.plan_remove(content, info[0], info[1], info[2])
+                self.marks.delete_styles(delete_ids)
+                for s_, e_ in keep:
+                    fields = marks_mod.span_fields(content, s_, e_)
+                    if fields:
+                        self.marks.add_style(file_name, kind, *fields)
+            result = 'off'
+        else:
+            for cs, ce in spans:
+                located = marks_mod.find_mark_spans(content, self.marks.styles_for_file(fkey, kind))
+                info = marks_mod.analyze_span(content, located, cs, ce)
+                if info is not None and info[3]:
+                    continue
+                delete_ids, new = marks_mod.plan_add(info[0], info[1], info[2])
+                self.marks.delete_styles(delete_ids)
+                for s_, e_ in new:
+                    fields = marks_mod.span_fields(content, s_, e_)
+                    if fields:
+                        self.marks.add_style(file_name, kind, *fields)
+            result = 'on'
+        self._push_undo(key, item, kind, snap)
+        return result
+
+    # ---------- свои мысли ----------
+    def add_note(self, key: str, ds: int, de: int, text: str) -> Optional[int]:
+        """Мысль привязывается к выделенному слову (фрагменту) и показывается курсивом в скобках за ним."""
+        text = (text or '').strip()
+        item, pieces = self._content_pieces(key, ds, de)
+        if item is None or not pieces or not text:
+            return None
+        cs, ce = pieces[-1]
+        fields = marks_mod.span_fields(item['content'], cs, ce)
+        if not fields:
+            return None
+        snap = self.marks.snapshot_file(item['book'])
+        nid = self.marks.add_note(item['book'], fields[0], fields[1], fields[2], text)
+        self._push_undo(key, item, 'note', snap)
+        return nid
+
+    def note_info(self, nid: int):
+        return self.marks.get_note(nid)
+
+    def _note_edit(self, nid: int, what: str, fn) -> Optional[str]:
+        note = self.marks.get_note(nid)
+        if note is None:
+            return None
+        item = self._item_for_file_key(note.file_key)
+        snap = self.marks.snapshot_file(note.file_label or note.file_key)
+        fn(note)
+        key = self._key_for_note(note)
+        if item is not None or key:
+            self.undo_stack.append({'key': key, 'file_name': note.file_label or note.file_key, 'snap': snap,
+                                    'what': what, 'conspect_size': None})
+            del self.undo_stack[:-self.UNDO_DEPTH]
+            self.on_undo(len(self.undo_stack))
+        return key
+
+    def _item_for_file_key(self, fkey: str):
+        for it in self.outcome.results:
+            if marks_mod.file_key(it['book']) == fkey and it.get('content') is not None:
+                return it
+        return None
+
+    def _key_for_note(self, note) -> Optional[str]:
+        """Карточка, на которой сейчас показана эта мысль (чтобы перерисовать только её)."""
+        for it in self.outcome.results:
+            if marks_mod.file_key(it['book']) != note.file_key or it.get('content') is None:
+                continue
+            if any(nt.id == note.id for nt, _s, _e in marks_mod.find_mark_spans(it['content'], [note])):
+                return f"{it['book']}:{it['rowid']}"
+        return None
+
+    def edit_note_text(self, nid: int, text: str) -> Optional[str]:
+        text = (text or '').strip()
+        if not text:
+            return self.delete_note(nid)
+        return self._note_edit(nid, 'note', lambda n: self.marks.update_note(nid, text=text))
+
+    def toggle_note_flag(self, nid: int, flag: str) -> Optional[str]:
+        def go(n):
+            flags = n.flags or ''
+            self.marks.update_note(nid, flags=flags.replace(flag, '') if flag in flags else flags + flag)
+        return self._note_edit(nid, 'note', go)
+
+    def delete_note(self, nid: int) -> Optional[str]:
+        return self._note_edit(nid, 'note', lambda n: self.marks.delete_note(nid))
+
     def toggle_mark(self, key: str, ds: int, de: int, text: str) -> Optional[str]:
         """Выделение без подтверждений: не подчёркнуто — подчёркиваем и дублируем в конспект;
            уже подчёркнуто — подчёркивание снимается (конспект не трогаем). Возвращает 'marked' / 'unmarked' / None."""
-        if self.selection_marked(key, ds, de):
-            return 'unmarked' if self.unmark_selection(key, ds, de, publish=False) else None
         item = self._find_item(key)
-        snapshot = list(self.marks.marks_for_file(marks_mod.file_key(item['book']))) if item else []
+        snap = self.marks.snapshot_file(item['book']) if item else None
+        if self.selection_marked(key, ds, de):
+            if not self.unmark_selection(key, ds, de, publish=False):
+                return None
+            self._push_undo(key, item, 'unmark', snap)
+            return 'unmarked'
         size = os.path.getsize(self.paths.conspect_path) if os.path.exists(self.paths.conspect_path) else 0
         if not self.mark_selection(key, ds, de, publish=False):
             return None
         self.quote_to_conspect(key, text)
-        if item:
-            self.undo_stack.append({'key': key, 'file_name': item['book'], 'snapshot': snapshot, 'conspect_size': size})
-            del self.undo_stack[:-30]
-            self.on_undo(len(self.undo_stack))
+        self._push_undo(key, item, 'mark', snap, size)
         return 'marked'
 
+    UNDO_TEXT = {'mark': "Подчёркивание отменено, запись в конспекте удалена", 'unmark': "Снятие подчёркивания отменено",
+                 'big': "Увеличение шрифта отменено", 'color': "Цветовое выделение отменено",
+                 'note': "Действие с мыслью отменено"}
+
     def undo_last_mark(self) -> Optional[str]:
-        """Отмена последнего выделения: подчёркивание снимается, запись в конспекте удаляется. Возвращает ключ карточки."""
+        """Отмена последнего действия (подчёркивание, снятие, шрифт, цвет, мысль; до UNDO_DEPTH штук подряд).
+           Возвращает ключ карточки."""
         if not self.undo_stack:
             return None
         e = self.undo_stack.pop()
         try:
-            self.marks.replace_file_marks(e['file_name'], e['snapshot'])
+            self.marks.restore_file(e['file_name'], e['snap'])
             path = self.paths.conspect_path
-            if os.path.exists(path) and os.path.getsize(path) > e['conspect_size']:
+            if e.get('conspect_size') is not None and os.path.exists(path) and os.path.getsize(path) > e['conspect_size']:
                 with open(path, 'r+b') as f:
                     f.truncate(e['conspect_size'])
-            self.on_status("Выделение отменено, запись в конспекте удалена")
+            self.on_status(self.UNDO_TEXT.get(e.get('what'), "Действие отменено"))
         except Exception as ex:
             self.on_status(f"Не удалось отменить: {ex}")
         self.on_undo(len(self.undo_stack))
@@ -552,6 +716,21 @@ class Controller:
             self.on_status(f"Не удалось сохранить: {e}")
             return None
         self.on_status(f"Сохранено: {path}")
+        return path
+
+    def export_notes(self) -> Optional[str]:
+        """Файл «Мысли_…txt» со всеми своими мыслями. None — мыслей ещё нет."""
+        notes_ = self.marks.all_notes()
+        if not notes_:
+            self.on_status("Своих мыслей пока нет")
+            return None
+        path = self._export_name('Мысли', 'txt')
+        try:
+            marks_mod.export_notes_txt(notes_, path)
+        except Exception as e:
+            self.on_status(f"Не удалось сохранить: {e}")
+            return None
+        self.on_status(f"Сохранено: {os.path.basename(path)}")
         return path
 
     def _export_name(self, label: str, ext: str) -> str:
