@@ -1183,8 +1183,7 @@ class SinevaApp(App):
         except Exception:
             pass
         self.ctl.publish_books()
-        if not self.ctl.library.books:
-            self.sm.current = 'books'
+        self.sm.current = 'books'                           # приложение всегда стартует с вкладки «Книги»
         self.ready_root = root
         self._swap()
 
@@ -1464,6 +1463,9 @@ class SinevaApp(App):
     def go_tab(self, name):
         if self.sm.current != name:
             self._prev_tab = self.sm.current if self.sm.current != 'read' else getattr(self, '_prev_tab', 'search')
+        for scr in (self.search_s, self.read_s):            # WebView других вкладок скрывается сразу
+            if scr.native is not None and scr.name != name:
+                scr.native.hide()
         self.sm.current = name                              # экран открывается сразу,
         if name in ('search', 'read'):                      # а содержимое готовится уже после его отрисовки
             Clock.schedule_once(lambda dt: self.ctl.set_tab(name), 0)

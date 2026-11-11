@@ -2,6 +2,7 @@
 
 WebView — родной виджет, поэтому текст не превращается в текстуры Kivy: вёрстка, прокрутка и подсветка делает Android.
 Связь: Python → страница через evaluateJavascript(js); страница → Python опросом window.SV.take() (JSON-события)."""
+import time
 import json
 
 try:                                                         # только на Android
@@ -104,9 +105,18 @@ class NativeList:
     def sync(self, geom, visible):
         """geom = (left, top, width, height) в пикселях окна; вызывается периодически, шлёт на Android только изменения."""
         geom = tuple(int(v) for v in geom)
-        if geom != self.geom or visible != self.visible:
-            self.geom, self.visible = geom, bool(visible)
+        now = time.time()
+        # раз в секунду состояние отправляется повторно: команда, потерянная пока WebView создавался, не должна
+        # оставить его видимым поверх других вкладок
+        if geom != self.geom or visible != self.visible or now - getattr(self, '_sent', 0) > 1.0:
+            self.geom, self.visible, self._sent = geom, bool(visible), now
             self._apply(self.geom, self.visible)
+
+    def hide(self):
+        """Немедленно скрыть (при смене вкладки), не дожидаясь очередного тика."""
+        self.visible = False
+        if self.geom is not None:
+            self._apply(self.geom, False)
 
     # ---- команды в страницу и события из неё
     @run_on_ui_thread
