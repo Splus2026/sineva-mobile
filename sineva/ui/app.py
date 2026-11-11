@@ -514,6 +514,7 @@ class SearchScreen(Screen):
         """Снимок текущей страницы (картинка), чтобы она уезжала, пока под ней уже строится следующий блок."""
         try:
             img = self.sv.export_as_image()
+            img.texture.flip_vertical()                      # снимок получается перевёрнутым
             ghost = Widget(size_hint=(1, 1), pos_hint={'x': 0, 'y': 0})
             with ghost.canvas:
                 Color(1, 1, 1, 1)
@@ -581,9 +582,14 @@ class SearchScreen(Screen):
         def reset():
             self.box.clear_widgets()
             self._cards, self._widgets = [], {}
-        keep_scroll(self.sv, reset)
+        if keys != self._keys:                               # новый блок: всегда с начала, прежнее положение прокрутки не переносится
+            reset()
+            self.sv.scroll_y = 1
+            Clock.schedule_once(lambda dt: setattr(self.sv, 'scroll_y', 1), 0)
+            Clock.schedule_once(lambda dt: setattr(self.sv, 'scroll_y', 1), 0.05)
+        else:
+            keep_scroll(self.sv, reset)
         self._keys = keys
-        self.sv.scroll_y = 1                                 # новый блок — с начала
         if not cards:
             if not self.reading_screen and ctl.query.strip():
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
