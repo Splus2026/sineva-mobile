@@ -78,6 +78,21 @@ class SafFolder:
             cur.close()
         return None
 
+    def names(self):
+        """Имена файлов папки (подпапки пропускаются)."""
+        children = self.DC.buildChildDocumentsUriUsingTree(self.tree, self.root_id)
+        cur = self.resolver.query(children, ['document_id', '_display_name', 'mime_type'], None, None, None)
+        if cur is None:
+            raise RuntimeError("папка недоступна")
+        out = []
+        try:
+            while cur.moveToNext():
+                if cur.getString(2) != 'vnd.android.document/directory' and cur.getString(1):
+                    out.append(cur.getString(1))
+        finally:
+            cur.close()
+        return sorted(out)
+
     def read(self, name: str):
         uri = self._find(name)
         if uri is None:

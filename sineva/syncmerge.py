@@ -180,6 +180,9 @@ class DirFolder:
         with open(p, 'rb') as f:
             return f.read()
 
+    def names(self):
+        return sorted(n for n in os.listdir(self.path) if os.path.isfile(os.path.join(self.path, n)))
+
     def write(self, name: str, data: bytes) -> None:
         p = os.path.join(self.path, name)
         with open(p, 'wb') as f:

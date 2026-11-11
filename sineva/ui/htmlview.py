@@ -150,13 +150,14 @@ button.ex{padding:6px;font-size:14px;margin-top:6px;background:transparent;color
 </style><style id="fs"></style></head><body><div id="cards"></div><button id="more">Показать ещё</button>
 <script>
 (function(){
-var ev=[], anchor=null;
+var ev=[], anchor=null, ro=false;
 function clearAnchor(){ if(anchor){ anchor.el.classList.remove('sel'); anchor=null; } }
 document.addEventListener('click',function(e){
   var t=e.target;
   if(t.id==='more'){ ev.push({t:'more'}); return; }
   if(t.classList.contains('ex')){ ev.push({t:'expand',key:t.getAttribute('data-key')}); return; }
-  if(t.classList.contains('nt')){ ev.push({t:'note',nid:t.getAttribute('data-nid')}); return; }
+  if(t.classList.contains('nt')){ if(ro){ return; } ev.push({t:'note',nid:t.getAttribute('data-nid')}); return; }
+  if(ro){ return; }
   if(!t.classList.contains('w')){ clearAnchor(); return; }
   var card=t.closest('.card'); var key=card.getAttribute('data-key');
   var a=+t.getAttribute('data-a'), b=+t.getAttribute('data-b');
@@ -181,6 +182,7 @@ window.SV={
   },
   setMore:function(label){ var m=document.getElementById('more'); if(label){ m.textContent=label; m.style.display='block'; } else m.style.display='none'; },
   setFont:function(px,step){ document.getElementById('fs').textContent='.tx{font-size:'+px+'px}.bg{font-size:calc(1em + '+(step||2)+'px)}'; },
+  setReadonly:function(v){ ro=!!v; },
   scrollTop:function(){ window.scrollTo(0,0); },
   take:function(){ var r=JSON.stringify(ev); ev=[]; return r; }
 };

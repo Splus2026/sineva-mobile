@@ -25,7 +25,7 @@ from kivy.uix.textinput import TextInput
 from .. import __version__
 from ..controller import Controller
 from ..search import escape_markup
-from .picker import add_home_shortcut, pick_files, publish_shared, share_file
+from .picker import add_home_shortcut, pick_files, publish_shared, share_file, save_to_downloads, is_android
 from . import textmodel
 from .splash import Splash
 from . import htmlview, nativeview, safsync
@@ -208,11 +208,12 @@ class SelectableText(Label):
     TAP_MAX_MOVE = 12            # dp: больше — это уже прокрутка, а не касание
 
     def __init__(self, card, on_select, on_hint=lambda t: None, font_pt=16, on_activate=lambda w: None,
-                 on_note=None, on_anchor=None, step=2, **kw):
+                 on_note=None, on_anchor=None, step=2, readonly=False, **kw):
         kw.setdefault('color', BODY)
         super().__init__(markup=True, size_hint_y=None, halign='left', valign='top', font_size=sp(font_pt), **kw)
         self.card, self.on_select, self.on_hint, self.on_activate = card, on_select, on_hint, on_activate
         self.on_note, self.on_anchor, self.font_pt, self.step = on_note, on_anchor, font_pt, step
+        self.readonly = readonly                      # режим «Отметки»: только чтение
         self.sel = None
         self.select_mode = False
         self._refs_info = {}
@@ -327,6 +328,8 @@ class SelectableText(Label):
         return self.to_window(self.x, oy - (best[1] + best[3]) / 2.0)[1]
 
     def _tap(self, pos):
+        if self.readonly:
+            return
         nid = self._note_hit(pos)
         if nid is not None and self.on_note is not None:      # касание своей мысли
             self.on_note(nid, self)
@@ -535,6 +538,7 @@ class SearchScreen(Screen):
             nl.call(htmlview.js_call('setCards', ''.join(htmlview.card_html(c, exp) for c in cards)))
             if fresh or not self.reading_screen:
                 nl.call(htmlview.js_call('scrollTop'))
+        nl.call(htmlview.js_call('setReadonly', ctl.marks_only()))
         nl.call(htmlview.js_call('setMore', ctl.more_label if more else ''))
         self._keys = [c['key'] for c in cards]
         built = (time.time() - t0) * 1000
@@ -687,7 +691,8 @@ class SearchScreen(Screen):
                        **clip_layers(c, a_, b_))
             w = SelectableText(sub, self.app.on_selection, self.ctl.on_status,
                                self.ctl.config.get_int('font_size', 16), self._activate,
-                               on_note=self.app.on_note_tap, on_anchor=self.app.on_anchor, step=self.ctl.font_step())
+                               on_note=self.app.on_note_tap, on_anchor=self.app.on_anchor, step=self.ctl.font_step(),
+                               readonly=self.ctl.marks_only())
             parts.append(w)
             box.add_widget(w)
         self._widgets[key] = parts
@@ -1058,8 +1063,10 @@ class SettingsScreen(Screen):
         self.set_box.padding = (dp(12), dp(8), dp(8), dp(8))
         self.set_box.add_widget(mlabel('Текст блоков'))
         self.set_box.add_widget(segmented(
-            [('Полный', 0), ('Краткий', 1)], 1 if self.ctl.config.get_bool('brief_view', False) else 0,
-            lambda v: (self.ctl.set_setting('brief_view', v), self.ctl.reset_views(),
+            [('Полный', 0), ('Краткий', 1), ('Отметки', 2)],
+            2 if self.ctl.marks_only() else (1 if self.ctl.config.get_bool('brief_view', False) else 0),
+            lambda v: (self.ctl.set_setting('brief_view', 1 if v == 1 else 0), self.ctl.set_setting('marks_view', 1 if v == 2 else 0),
+                       self.ctl.reset_views(), self.app.refresh_actions(),
                        self.ctl.on_status("Вид текста изменён: повторите поиск или откройте «Чтение»"))))
         step = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         self._step_label = mlabel(f"«+Шрифт»: на {self.ctl.font_step()}")
@@ -1090,7 +1097,9 @@ class SettingsScreen(Screen):
                     name = '?'
             self.set_box.add_widget(btn('Папка синхронизации' + (f': {name}' if name else '…'), self.pick_sync, color=GRAY))
             self.set_box.add_widget(btn('Синхронизировать', self.ctl.sync_now, color=ACCENT if uri else GRAY))
-            extra_btn = 2
+            self.set_box.add_widget(btn('Архив папки синхронизации в «Загрузки»', self.app.archive_now,
+                                        color=ACCENT if uri else GRAY))
+            extra_btn = 3
         self.set_box.add_widget(btn('Ярлык на главный экран', self.add_shortcut, color=GRAY))
         self.set_box.add_widget(btn('Пароль', self.app.open_password, color=GRAY))
         self.set_btn.set_open(True)
@@ -1210,6 +1219,8 @@ class SinevaApp(App):
         c.on_reset = lambda: (self.search_s.clear(), self.read_s.clear())
         c.on_undo = self._on_undo_count
         c.on_sync = self.sync_dialog
+        if is_android():
+            c.save_download = save_to_downloads
         c.on_ask_continue = self.ask_continue
 
         root = BoxLayout(orientation='vertical')
@@ -1245,7 +1256,7 @@ class SinevaApp(App):
 
     def refresh_actions(self):
         """Кнопки «Отмена / +Шрифт / +Цвет / +Мысли» видны, пока есть что отменять или выделено слово."""
-        on = self._undo_n > 0 or self.cur_sel is not None
+        on = (self._undo_n > 0 or self.cur_sel is not None) and not self.ctl.marks_only()
         for scr in (self.search_s, self.read_s):
             scr.set_undo(on)
 
@@ -1262,11 +1273,21 @@ class SinevaApp(App):
                     w.set_layers(layers, w.card.get('offset', 0))
                     w.refresh()
 
+    def _ro(self):
+        if self.ctl.marks_only():
+            self.ctl.on_status('Режим «Отметки»: только чтение и поиск, отметки менять нельзя')
+            return True
+        return False
+
     def on_anchor(self, key, ds, de, widget):
+        if self._ro():
+            return
         self.cur_sel = {'key': key, 's': ds, 'e': de}
         self.refresh_actions()
 
     def undo_mark(self):
+        if self._ro():
+            return
         if not self.ctl.undo_stack:                         # нечего откатывать — просто снять выделение
             key = self.cur_sel['key'] if self.cur_sel else None
             self.cur_sel = None
@@ -1286,6 +1307,8 @@ class SinevaApp(App):
     def sel_done(self, key, ds, de, text):
         """Выделен фрагмент (первое и последнее слово). Не подчёркнут — подчёркиваем и пишем в конспект;
            уже подчёркнут — диалог: снять выделение / +Шрифт / +Цвет / Отмена."""
+        if self._ro():
+            return
         self.cur_sel = {'key': key, 's': ds, 'e': de}
         if self.ctl.selection_marked(key, ds, de):
             self.open_range_dialog()
@@ -1334,6 +1357,8 @@ class SinevaApp(App):
             ('Отмена', cancel, GRAY)])
 
     def apply_style(self, kind):
+        if self._ro():
+            return
         cs = self.cur_sel
         if not cs:
             self.ctl.on_status('Сначала нажмите первое и последнее слово фрагмента')
@@ -1356,6 +1381,8 @@ class SinevaApp(App):
     def open_note_editor(self, nid=None):
         """Окно ввода мыслей к выделенному слову (nid — правка уже сохранённой мысли)."""
         ctl = self.ctl
+        if self._ro():
+            return
         cs = self.cur_sel
         note = ctl.note_info(nid) if nid else None
         if note is None and not cs:
@@ -1399,7 +1426,7 @@ class SinevaApp(App):
     def on_note_tap(self, nid, widget=None):
         """Касание курсивной мысли: подчеркнуть (Ч) / +Шрифт / +Цвет / правка (карандаш)."""
         note = self.ctl.note_info(nid)
-        if note is None:
+        if note is None or self._ro():
             return
         flags = note.flags or ''
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
@@ -1531,33 +1558,52 @@ class SinevaApp(App):
         pop.open()
 
     def sync_dialog(self, state, text):
-        """Окно «Синхронизация»: пока идёт обмен — крутится индикатор, закрыть нельзя; по окончании — итог и кнопка «Готово»."""
+        """Окно «Синхронизация»: пока идёт обмен — крутится индикатор, закрыть нельзя; по окончании — итог,
+           предложение сделать архив папки в «Загрузки» и кнопка «Готово».
+           Состояния: start / done (синхронизация завершена) / error / backup (итог архивации)."""
         pop = self._sync_pop
         if state == 'start':
-            if pop is not None:
+            if pop is not None:                              # окно уже открыто (архив после синхронизации)
+                lab, bar, ok, arc = self._sync_parts
+                lab.text = text
+                ok.disabled = arc.disabled = True
+                arc.opacity = 0
+                self._sync_anim.cancel()
+                self._sync_anim = Clock.schedule_interval(lambda dt: setattr(bar, 'value', (bar.value + 6) % 100), 0.1)
                 return
             box = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
             lab = Label(text=text, font_size=sp(16), halign='center', valign='middle')
             lab.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], None)))
             bar = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(8))
+            arc = btn('Архив папки в «Загрузки»', self.archive_now, color=ACCENT)
+            arc.disabled, arc.opacity = True, 0
             ok = btn('Готово', lambda: self._sync_close(), color=GRAY)
             ok.disabled = True
-            for w in (lab, bar, ok):
+            for w in (lab, bar, arc, ok):
                 box.add_widget(w)
-            pop = top_popup('Синхронизация', box, dp(240))
+            pop = top_popup('Синхронизация', box, dp(300))
             pop.open()
-            self._sync_pop, self._sync_parts = pop, (lab, bar, ok)
-            ev = Clock.schedule_interval(lambda dt: setattr(bar, 'value', (bar.value + 6) % 100), 0.1)
-            self._sync_anim = ev
+            self._sync_pop, self._sync_parts = pop, (lab, bar, ok, arc)
+            self._sync_anim = Clock.schedule_interval(lambda dt: setattr(bar, 'value', (bar.value + 6) % 100), 0.1)
             return
         if pop is None:
             return
-        lab, bar, ok = self._sync_parts
+        lab, bar, ok, arc = self._sync_parts
         self._sync_anim.cancel()
-        bar.value = 100 if state == 'done' else 0
-        lab.text = text
+        bar.value = 100 if state in ('done', 'backup') else 0
+        lab.text = text + ("\n\nМожно сохранить архив папки синхронизации для аварийного восстановления." if state == 'done' and self.ctl.sync_uri() else '')
         ok.disabled = False
         ok.background_color = ACCENT
+        offer = state == 'done' and bool(self.ctl.sync_uri())
+        arc.disabled, arc.opacity = not offer, 1 if offer else 0
+
+    def archive_now(self):
+        """Архив папки синхронизации -> «Загрузки» (не пропадает при переустановке)."""
+        if self.ctl.config.get('sync_uri', '') in ('', None):
+            self.ctl.on_status('Сначала выберите папку синхронизации')
+            return
+        self.sync_dialog('start', 'Создаётся архив папки синхронизации…\nПодождите.')
+        self.ctl.backup_sync_folder(lambda ok, t: self.sync_dialog('backup' if ok else 'error', t))
 
     def _sync_close(self):
         pop, self._sync_pop = self._sync_pop, None

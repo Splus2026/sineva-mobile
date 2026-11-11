@@ -197,6 +197,13 @@ def publish_shared(path):
     return _SHARED[path]
 
 
+def save_to_downloads(path):
+    """Android: копия файла в системную папку «Загрузки» (переживает переустановку приложения). Возвращает видимый путь."""
+    from androidstorage4kivy import SharedStorage, Environment      # type: ignore
+    SharedStorage().copy_to_shared(path, collection=Environment.DIRECTORY_DOWNLOADS)
+    return f"Download/{os.path.basename(path)}"
+
+
 def share_file(path, status=lambda text: None):
     """«Поделиться файлом»: файл копируется в «Документы» и открывается системное меню отправки
        (мессенджеры, почта, диск). На ПК просто сообщает путь."""

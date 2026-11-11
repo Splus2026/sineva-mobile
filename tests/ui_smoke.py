@@ -167,6 +167,25 @@ app2.undo_mark(); assert len(c2.undo_stack) == before - 1
 assert c2.export_notes()
 for _ in range(10): app2.undo_mark()
 assert not c2.undo_stack
+# режим «Отметки» и архив папки синхронизации
+c2.set_setting('marks_view', 1); c2.reset_views(); c2.submit_query('вера')
+k2 = c2.outcome.results[0]['book'] + ':' + str(c2.outcome.results[0]['rowid'])
+cd2 = c2.card_dict(k2); print('Отметки:', repr(cd2['text']))
+assert cd2['text'] == '(отметок нет)' or '…' in cd2['text'] or cd2['marks']
+assert c2.toggle_mark(k2, 0, 4, 'x') is None and c2.add_note(k2, 0, 4, 'z') is None
+app2.search_s._on_native([{'t': 'select', 'key': k2, 's': 0, 'e': 4}]); app2.apply_style('big'); app2.open_note_editor(); app2.undo_mark()
+assert any('setReadonly(true)' in x for x in calls)
+c2.set_setting('marks_view', 0); c2.reset_views()
+import tempfile as _tf, zipfile as _zf
+from sineva.syncmerge import DirFolder
+d = _tf.mkdtemp(); open(d + '/dnev.txt', 'w').write('дневник'); open(d + '/sineva_marks.json', 'w').write('{}')
+res = []
+saved = []
+c2.save_download = lambda p: (saved.append(_zf.ZipFile(p).namelist()), 'Download/x.zip')[1]
+c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(d))
+assert res and res[0][0] and sorted(saved[0]) == ['dnev.txt', 'sineva_marks.json'], res
+c2.backup_sync_folder(lambda ok, t: res.append((ok, t)), DirFolder(_tf.mkdtemp())); assert not res[1][0]
+app2.sync_dialog('start', 'x'); app2.sync_dialog('done', 'ok'); app2.sync_dialog('start', 'a'); app2.sync_dialog('backup', 'b'); app2._sync_close()
 print('native smoke OK, вызовов JS:', len(calls))
 
 # ---- окно «Синхронизация»

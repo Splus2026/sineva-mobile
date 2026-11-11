@@ -336,10 +336,38 @@ class Controller:
         """(текст на экране, интервалы подсветки, карта кусков, постраничность) для топика."""
         content = item['content']
         exact, frags = self.search.highlight_spec(self.outcome, item)
+        if self.marks_only():
+            text, segments = self._marks_text(item)
+            return text, get_intervals(text, exact, frags), segments, None
         if brief:
             text, hl, segments = build_brief_view_mapped(content, exact, frags)
             return text, hl, segments, None
         return content, get_intervals(content, exact, frags), [(0, 0, len(content))], None
+
+    def marks_only(self) -> bool:
+        """Режим «Отметки»: показываются только ранее выделенные фрагменты (и мысли), менять отметки нельзя."""
+        return self.config.get_bool('marks_view', False)
+
+    def _marks_text(self, item: dict):
+        """Текст из одних отмеченных фрагментов (подчёркнутое и слова с мыслями), склеенных « … », и карта кусков."""
+        content, fkey = item['content'], marks_mod.file_key(item['book'])
+        spans = [(s_, e_) for _m, s_, e_ in marks_mod.find_mark_spans(content, self.marks.marks_for_file(fkey))]
+        spans += [(s_, e_) for _m, s_, e_ in marks_mod.find_mark_spans(content, self.marks.notes_for_file(fkey))]
+        merged = []
+        for s_, e_ in sorted(spans):
+            if merged and s_ <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e_)
+            else:
+                merged.append([s_, e_])
+        if not merged:
+            return '(отметок нет)', []
+        text, segs = '', []
+        for i, (s_, e_) in enumerate(merged):
+            if i:
+                text += ' … '
+            segs.append((len(text), s_, e_ - s_))
+            text += content[s_:e_]
+        return text, segs
 
     @classmethod
     def chunks(cls, text: str):
@@ -521,7 +549,7 @@ class Controller:
         """Выделенное внутри подчёркнутого получает «+Шрифт» (kind='big') или «+Цвет' ('color'); повторно — снимается.
            Возвращает 'on' / 'off' / 'need_mark' (выделено не внутри подчёркнутого) / None."""
         item, pieces = self._content_pieces(key, ds, de)
-        if item is None or not pieces:
+        if item is None or not pieces or self.marks_only():
             return None
         content, file_name = item['content'], item['book']
         fkey = marks_mod.file_key(file_name)
@@ -571,7 +599,7 @@ class Controller:
         """Мысль привязывается к выделенному слову (фрагменту) и показывается курсивом в скобках за ним."""
         text = (text or '').strip()
         item, pieces = self._content_pieces(key, ds, de)
-        if item is None or not pieces or not text:
+        if item is None or not pieces or not text or self.marks_only():
             return None
         cs, ce = pieces[-1]
         fields = marks_mod.span_fields(item['content'], cs, ce)
@@ -634,6 +662,8 @@ class Controller:
         """Выделение без подтверждений: не подчёркнуто — подчёркиваем и дублируем в конспект;
            уже подчёркнуто — подчёркивание снимается (конспект не трогаем). Возвращает 'marked' / 'unmarked' / None."""
         item = self._find_item(key)
+        if self.marks_only():
+            return None
         snap = self.marks.snapshot_file(item['book']) if item else None
         if self.selection_marked(key, ds, de):
             if not self.unmark_selection(key, ds, de, publish=False):
@@ -1079,6 +1109,66 @@ class Controller:
                     self.on_sync('done', msg)
             self.ui_post(done)
         self._run(work)
+
+    # ---------- архив папки синхронизации (аварийное восстановление) ----------
+    save_download = None            # Android: функция, кладущая файл в системную папку «Загрузки»; по умолчанию ~/Downloads
+
+    def _sync_folder(self, folder=None):
+        if folder is not None:
+            return folder
+        uri = self.sync_uri()
+        if not uri:
+            raise RuntimeError("Сначала выберите папку синхронизации")
+        from .ui.safsync import SafFolder
+        return SafFolder(uri)
+
+    def backup_sync_folder(self, cb=None, folder=None) -> None:
+        """Все файлы папки синхронизации -> один zip в «Загрузках» (не удаляется при переустановке приложения).
+           cb(ok, текст) вызывается в потоке интерфейса."""
+        cb = cb or (lambda ok, text: None)
+        try:
+            folder = self._sync_folder(folder)
+        except Exception as e:
+            cb(False, f"Архив не создан:\n{e}")
+            return
+
+        def work():
+            import zipfile
+            tmp, ok, msg = None, False, ''
+            try:
+                names = folder.names()
+                if not names:
+                    raise RuntimeError("в папке синхронизации нет файлов")
+                os.makedirs(self.paths.exports_dir, exist_ok=True)
+                tmp = os.path.join(self.paths.exports_dir, f"Синева_папка_синхронизации_{time.strftime('%Y-%m-%d_%H-%M-%S')}.zip")
+                count = 0
+                with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+                    for n in names:
+                        data = folder.read(n)
+                        if data is not None:
+                            z.writestr(n, data)
+                            count += 1
+                saver = self.save_download or self._save_download_default
+                shown = saver(tmp)
+                ok, msg = True, f"Архив готов: {shown}\nФайлов в архиве: {count}"
+            except Exception as e:
+                msg = f"Архив не создан:\n{e}"
+            finally:
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)                      # копия осталась в «Загрузках»
+                    except OSError:
+                        pass
+            self.ui_post(lambda: cb(ok, msg))
+        self._run(work)
+
+    def _save_download_default(self, path: str) -> str:
+        import shutil
+        d = os.path.join(os.path.expanduser('~'), 'Downloads')
+        os.makedirs(d, exist_ok=True)
+        dst = os.path.join(d, os.path.basename(path))
+        shutil.copyfile(path, dst)
+        return dst
 
     # ================= служебное =================
     def _run(self, fn: Callable) -> None:
