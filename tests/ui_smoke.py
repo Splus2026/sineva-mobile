@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 class W:
     def __init__(self, *a, **kw):
-        self.__dict__.update(kw); self.__dict__.setdefault('size', (100, 100)); self.__dict__.setdefault('pos', (0, 0)); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1; self.right = 100
+        self.__dict__.update(kw); self.__dict__.setdefault('size', (100, 100)); self.__dict__.setdefault('pos', (0, 0)); self.children = []; self.manager = None; self.parent = None; self.refs = {}; self.texture_size = (0, 0); self.center_x = 0; self.center_y = 0; self.x = 0; self.y = 0; self.do_scroll_y = True; self.text = kw.get('text', ''); self.height = 100; self.scroll_y = 1; self.right = 100; self.width = kw.get('width', 100)
         self.canvas = _Ctx(); self.canvas.before = _Ctx(); self.canvas.after = _Ctx()
     def bind(self, **kw): pass
     def collide_point(self, x, y): return True

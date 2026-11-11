@@ -154,10 +154,10 @@ def vlist():
 
 class ReadBox(ScrollView):
     """Только для чтения, с прокруткой по вертикали (если текст не помещается). to_end — показывать конец."""
-    def __init__(self, to_end=False, **kw):
+    def __init__(self, to_end=False, font_pt=14, **kw):
         super().__init__(bar_width=dp(4), **kw)
         self.to_end = to_end
-        self.lb = Label(color=TXT, size_hint_y=None, halign='left', valign='top', font_size=sp(14))
+        self.lb = Label(color=TXT, size_hint_y=None, halign='left', valign='top', font_size=sp(font_pt))
         self.lb.bind(width=lambda w, v: setattr(w, 'text_size', (v - dp(8), None)))
         self.lb.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1] + dp(10)))
         self.add_widget(self.lb)
@@ -405,7 +405,7 @@ class SearchScreen(Screen):
         self._native_on = app.native_wanted()
         root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
         top = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4))
-        self.input = no_bubble(TextInput(hint_text='Слово или часть слова (вер.а — точка ограничивает)', multiline=False,
+        self.input = no_bubble(TextInput(hint_text='Введите слово (фрагмент)', multiline=False,
                                font_size=sp(22), write_tab=False, background_normal='', background_active='',
                                background_color=INPUT_BG, foreground_color=TXT, cursor_color=TXT,
                                hint_text_color=(0.5, 0.52, 0.6, 1)))
@@ -443,11 +443,11 @@ class SearchScreen(Screen):
         self.dot = StatusDot()
         dot_col = BoxLayout(size_hint=(None, 1), width=dp(18), padding=(dp(2), dp(4), 0, 0))
         dot_col.add_widget(self.dot)
-        status_row = BoxLayout(size_hint_y=None)
+        status_row = self.status_row = BoxLayout(size_hint_y=None)
         status_row.add_widget(self.status_slot)
         status_row.add_widget(dot_col)
-        self.status_slot.bind(height=lambda w, h: setattr(status_row, 'height', h))
-        status_row.height = self.status_slot.height
+        self.status_slot.bind(height=lambda w, h: setattr(status_row, 'height', min(h, dp(84))))   # длинный статус не должен съедать место списка
+        status_row.height = min(self.status_slot.height, dp(84))
         root.add_widget(status_row)
         self.actions = BoxLayout(size_hint_y=None, height=dp(37), spacing=dp(3))
         self.undo_btn = Button(text='Отмена', size_hint_x=0.62, background_normal='', background_color=ACCENT,
@@ -483,12 +483,19 @@ class SearchScreen(Screen):
             return
         h = self.holder
         x, y = h.to_window(h.x, h.y)
-        top = Window.height - (y + h.height)
+        hh = h.height
+        # Страховка от устаревшей раскладки: список занимает всё место под строкой состояния
+        sr = self.status_row
+        floor = self.to_window(self.x, self.y)[1]
+        room = sr.to_window(sr.x, sr.y)[1] - floor
+        if room > dp(150) and hh < room * 0.6:
+            y, hh = floor, room
+        top = Window.height - (y + hh)
         app = self.app
         shown = (self.manager is not None and self.manager.current == self.name and app.root is app.ready_root
                  and not getattr(app, '_locked', False)
                  and not any(isinstance(c, ModalView) for c in Window.children))
-        nl.sync((x, top, h.width, h.height), shown and h.width > 10 and h.height > 10)
+        nl.sync((x, top, h.width, hh), shown and h.width > 10 and hh > 10)
         nl.poll()
 
     def destroy(self):
@@ -999,7 +1006,7 @@ class ChevronButton(Button):
         from kivy.graphics import Line
         self.canvas.after.clear()
         s = dp(9)
-        cx, cy = self.right - dp(28), self.center_y
+        cx, cy = self.x + self.width - dp(30), self.y + self.height / 2.0     # не right/center_y: они обновляются позже size
         d = s / 2 if self.opened else -s / 2
         with self.canvas.after:
             Color(1, 1, 1, 1)
@@ -1644,9 +1651,9 @@ class SinevaApp(App):
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
         spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14),
                        background_normal='', background_color=BTN2, color=BTN2_TXT)
-        last = ReadBox(to_end=False, size_hint_y=0.4)
+        last = ReadBox(to_end=False, size_hint_y=0.4, font_pt=ctl.config.get_int('font_size', 16))
         text = TextInput(hint_text='Добавляемый текст (в конец выбранной книги)', multiline=True,
-                         size_hint_y=0.6, font_size=sp(16))
+                         size_hint_y=0.6, font_size=sp(ctl.config.get_int('font_size', 16)))
         no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         pop = tall_popup('Дополнение книги', box)
@@ -1738,9 +1745,9 @@ class SinevaApp(App):
     def open_diary(self):
         """Две части: сверху конец дневника (последние записи), снизу поле новой записи."""
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
-        last = ReadBox(to_end=True, size_hint_y=0.4)
+        last = ReadBox(to_end=True, size_hint_y=0.4, font_pt=self.ctl.config.get_int('font_size', 16))
         text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True,
-                         size_hint_y=0.6, font_size=sp(16))
+                         size_hint_y=0.6, font_size=sp(self.ctl.config.get_int('font_size', 16)))
         no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         pop = tall_popup('Дневник', box)
