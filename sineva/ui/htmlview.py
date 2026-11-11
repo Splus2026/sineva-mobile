@@ -203,5 +203,8 @@ window.SV={
 
 def js_call(fn: str, *args) -> str:
     """Строка JS: SV.fn(args...), аргументы — JSON-литералы (кавычки и переводы строк экранированы)."""
-    return (f"try{{window.SV&&window.SV.{fn}({','.join(json.dumps(a, ensure_ascii=False) for a in args)});}}"
+    # U+2028/2029/0085 внутри строкового литерала ломают разбор JS в старых WebView — вся команда молча пропадает
+    lit = ','.join(json.dumps(a, ensure_ascii=False) for a in args)
+    lit = lit.replace('\u2028', '\\u2028').replace('\u2029', '\\u2029').replace('\u0085', '\\u0085')
+    return (f"try{{window.SV&&window.SV.{fn}({lit});}}"
             f"catch(e){{window.SV&&window.SV.err('{fn}: '+e);}}")

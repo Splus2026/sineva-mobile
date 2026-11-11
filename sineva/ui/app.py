@@ -606,11 +606,27 @@ class SearchScreen(Screen):
         self._suffix = f" · отправлено в WebView: {built:.0f} мс"
         self.status.text = escape_markup(self._base + self._suffix)
 
-        def shown_info(raw):                                  # что реально лежит на странице (для диагностики)
-            if tok == self._tok:
-                self._suffix += f" · на странице: {str(raw).strip(chr(34))}"
+        want = card['key'] if card else None
+        tries = [0]
+
+        def check(dt=0):
+            def shown_info(raw):                              # что реально лежит на странице; не то — шлём блок заново
+                if tok != self._tok or self.native is None:
+                    return
+                got = str(raw).strip(chr(34))
+                if want and not got.startswith(want + ' ') and tries[0] < 4:
+                    tries[0] += 1
+                    c2 = ctl.card_dict(want) or card
+                    nl.call(htmlview.js_call('setCards', htmlview.card_html(c2, exp)))
+                    nl.call(htmlview.js_call('scrollTop'))
+                    self._suffix = f" · повтор отправки {tries[0]}"
+                    self.status.text = escape_markup(self._base + self._suffix)
+                    Clock.schedule_once(check, 0.35)
+                    return
+                self._suffix += f" · на странице: {got}"
                 self.status.text = escape_markup(self._base + self._suffix)
-        Clock.schedule_once(lambda dt: nl.ask('window.SV&&window.SV.info()', shown_info), 0.4)
+            nl.ask('window.SV&&window.SV.info()', shown_info)
+        Clock.schedule_once(check, 0.4)
 
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
