@@ -762,8 +762,7 @@ class SearchScreen(Screen):
         keys = [c['key'] for c in cards]
         keys_changed = keys != self._keys
         if keys != self._keys:                               # другой блок: выделение прежнего больше не нужно
-            self.app.cur_sel = None
-            self.app.refresh_actions()
+            self.app.page_changed()
         new_pos = nav['pos'] if nav else 0
         direction = (1 if new_pos > self._last_pos else -1) if (cards and self._last_pos and new_pos and new_pos != self._last_pos
                                                                and keys != self._keys) else 0
@@ -1476,16 +1475,24 @@ class SinevaApp(App):
             b.color = (1, 1, 1, 1) if n == name else NAV_TXT
 
     # ---------- слои текста: подчёркивание, «+Шрифт», «+Цвет», «+Мысли» ----------
+    _actions_pause = False          # после листания кнопки «Отмена/+Шрифт/…» скрыты до новой отметки или выделения
     cur_sel = None                  # последнее выделение: {'key', 's', 'e'} — в координатах текста карточки
     _undo_n = 0
 
     def _on_undo_count(self, n):
         self._undo_n = n
+        self._actions_pause = False                      # новая отметка/отмена — кнопки снова нужны
+        self.refresh_actions()
+
+    def page_changed(self):
+        """Страница сменилась: выделение сброшено, ряд кнопок над страницей убран (вместо него снова статус)."""
+        self.cur_sel = None
+        self._actions_pause = True
         self.refresh_actions()
 
     def refresh_actions(self):
         """Кнопки «Отмена / +Шрифт / +Цвет / +Мысли» видны, пока есть что отменять или выделено слово."""
-        on = (self._undo_n > 0 or self.cur_sel is not None) and not self.ctl.marks_only()
+        on = (self._undo_n > 0 or self.cur_sel is not None) and not self.ctl.marks_only() and not self._actions_pause
         for scr in (self.search_s, self.read_s):
             scr.set_undo(on)
 
@@ -1509,6 +1516,7 @@ class SinevaApp(App):
         if self._ro():
             return
         self.cur_sel = {'key': key, 's': ds, 'e': de}
+        self._actions_pause = False
         self.refresh_actions()
 
     def undo_mark(self):
@@ -1536,6 +1544,7 @@ class SinevaApp(App):
         if self._ro():
             return
         self.cur_sel = {'key': key, 's': ds, 'e': de}
+        self._actions_pause = False
         if self.ctl.selection_marked(key, ds, de):
             self.open_range_dialog()
             return
