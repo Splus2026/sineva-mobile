@@ -634,8 +634,7 @@ class SearchScreen(Screen):
             def finish(*a):
                 self._anim_busy = False
                 self._cover = pv                              # закрывает место, пока новый блок строится под ним
-                self._swiped = True
-                self.sv.pos_hint = {'x': 0, 'y': 0}
+                self._swiped = True                           # прежняя страница остаётся за экраном, пока строится новая
                 self._drag = None
                 self.ctl.go(sign)
                 Clock.schedule_once(lambda dt: self._drop_cover(), 0.8)   # страховка, если блок не сменился
@@ -659,6 +658,7 @@ class SearchScreen(Screen):
     def _drop_cover(self):
         pv, self._cover = self._cover, None
         self._swiped = False
+        self.sv.pos_hint = {'x': 0, 'y': 0}
         if pv is not None and pv.parent is not None:
             self.page.remove_widget(pv)
 
@@ -808,6 +808,7 @@ class SearchScreen(Screen):
         self.box.add_widget(w)
         Clock.schedule_once(first_frame, 0)
         if swiped:
+            self.sv.pos_hint = {'x': 0, 'y': 0}               # новая страница построена: вернуть на место, соседку убрать
             Clock.schedule_once(lambda dt: self._drop_cover(), 0.12)
         elif direction:
             self.turn(direction, ghost)
