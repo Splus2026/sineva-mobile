@@ -402,6 +402,7 @@ class SearchScreen(Screen):
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
+        self._pre = {}                   # заранее построенные соседние страницы {±1: ScrollView}
         self._peek_gen = 0               # поколение соседних страниц при перетаскивании
         self._drag = None                # состояние перетаскивания {'panels': {±1: ScrollView}, 'sy': …}
         self._anim_busy = False
@@ -512,7 +513,7 @@ class SearchScreen(Screen):
         if st and not touch.ud.get('pinch') and not self._anim_busy:
             dx, dy = touch.x - st[0], touch.y - st[1]
             if touch.ud.get('swd') is None:
-                if abs(dx) > dp(14) and abs(dx) > 1.5 * abs(dy):
+                if abs(dx) > dp(8) and abs(dx) > 1.5 * abs(dy):
                     touch.ud['swd'] = True
                     self._drag_begin()
                 elif abs(dy) > dp(14):
@@ -532,7 +533,6 @@ class SearchScreen(Screen):
         return res
 
     def _clear_panels(self):
-        self._peek_gen += 1
         if self._drag:
             for pv in self._drag['panels'].values():
                 if pv is not None and pv.parent is not None and pv is not self._cover:
@@ -546,20 +546,32 @@ class SearchScreen(Screen):
                 self.page.remove_widget(g)
         self._ghosts = []
         self._clear_panels()
-        self._drag = {'panels': {}, 'shown': None}
+        self._drag = {'panels': dict(self._pre), 'shown': None}      # соседи заранее построены — без паузы в начале жеста
+
+    def _build_panel(self, sign):
+        card = self.ctl.peek(sign)
+        if card is None:
+            return None
+        pv, box = vlist()
+        pv.size_hint, pv.pos_hint = (1, 1), {'x': sign, 'y': 0}
+        box.add_widget(self._card(card, None, None, peek=True))
+        return pv
 
     def _panel(self, sign):
         """Страница соседнего блока (+1 — следующий, -1 — предыдущий) или None."""
         d = self._drag
         if sign not in d['panels']:
-            card = self.ctl.peek(sign)
-            pv = None
-            if card is not None:
-                pv, box = vlist()
-                pv.size_hint, pv.pos_hint = (1, 1), {'x': sign, 'y': 0}
-                box.add_widget(self._card(card, None, None, peek=True))
-            d['panels'][sign] = pv
+            d['panels'][sign] = self._build_panel(sign)
         return d['panels'][sign]
+
+    def _prepare_panels(self, gen, signs=(1, -1)):
+        """Пока страницу читают, в паузах по одному строятся соседние: к началу свайпа они уже готовы."""
+        if gen != self._peek_gen or self._drag is not None or not signs:
+            return
+        sign, rest = signs[0], signs[1:]
+        if sign not in self._pre:
+            self._pre[sign] = self._build_panel(sign)
+        Clock.schedule_once(lambda dt: self._prepare_panels(gen, rest), 0.15)
 
     def _drag_move(self, dx):
         d = self._drag
@@ -772,6 +784,10 @@ class SearchScreen(Screen):
             Clock.schedule_once(lambda dt: self._drop_cover(), 0.12)
         elif direction:
             self.turn(direction, ghost)
+        self._peek_gen += 1                                   # прежние заготовки соседей устарели (другая страница или шрифт)
+        self._pre = {}
+        gen = self._peek_gen
+        Clock.schedule_once(lambda dt: self._prepare_panels(gen), 0.7)
 
     def clear(self):
         """Очистка карточек без перерисовки (после смены шрифта или вида)."""
