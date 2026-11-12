@@ -214,7 +214,7 @@ try:
     check('короткий запрос — подсказка, поиска нет', 'не менее' in got['status'] and got['cards'] is None)
     ctl.submit_query('довер')
     check('кнопка «Поиск» выдала карточки', got['cards'] and got['total'] >= 2, str(got['status']))
-    check('в статусе запрос и число блоков', "найдено блоков" in got['status'])
+    check('в статусе запрос, фрагменты и страницы', "Поиск '" in got['status'] and 'Найдено' in got['status'] and 'стран' in got['status'], got['status'])
     check('по умолчанию топик целиком', all(not c['expanded'] and c['segments'] == [(0, 0, len(c['text']))] for c in got['cards']))
     check('в карточке есть жёлтые участки', any(c['hl'] for c in got['cards']))
     n_cards = len(got['cards'])
@@ -293,7 +293,7 @@ try:
     ctl.config.set('page_size', 3)
     ctl.submit_query('терпение')
     check('сначала один блок из 60', len(got['cards']) == 1 and got['total'] == 60 and got['more'] == {'pos': 1, 'total': 60, 'prev': False, 'next': True}, str(got['more']))
-    check('в статусе замеры и режим', 'поиск' in got['status'] and 'словарь' in got['status'], got['status'])
+    check('в статусе замеры и режим', 'за ' in got['status'] and 'индекс' in got['status'] and 'словарь' in got['status'], got['status'])
     for _ in range(25):
         ctl.go(1)
     check('листание вперёд на 25 блоков', got['more']['pos'] == 26 and len(got['cards']) == 1, str(got['more']))
@@ -413,33 +413,34 @@ try:
     rc.selected = {'bibl.txt'}
     rc.set_tab('read')
     check('чтение: один блок', rg['cards'] and len(rg['cards']) == 1 and rc.reading, rg['status'])
-    check('чтение: заголовок «Блок 1»', 'Блок 1' in rg['cards'][0]['header'])
+    check('чтение: заголовок «Блок 1»', 'Страница 1' in rg['cards'][0]['header'])
     first_text = rg['cards'][0]['text']
     rc.go(1)
-    check('чтение: листание вперёд', len(rg['cards']) == 1 and rg['cards'][0]['text'] != first_text and 'Блок 2' in rg['cards'][0]['header'])
+    check('чтение: листание вперёд', len(rg['cards']) == 1 and rg['cards'][0]['text'] != first_text and 'Страница 2' in rg['cards'][0]['header'])
     rc.go(-1)
     check('чтение: листание назад', rg['cards'][0]['text'] == first_text and rg['more']['prev'] is False)
     rc.go(-1)
-    check('чтение: до начала не листается', 'Блок 1' in rg['cards'][0]['header'])
+    check('чтение: до начала не листается', 'Страница 1' in rg['cards'][0]['header'])
     for _ in range(4):
         rc.go(1)
     check('чтение: подгрузка следующих блоков', rg['more']['pos'] == 5, str(rg['more']))
     rc.set_tab('search'); rc.set_tab('read')
-    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Блок 5' in rc.full_cards()[0]['header'])
+    check('возврат на вкладку чтения — без повторных вопросов', rc.reading and 'Страница 5' in rc.full_cards()[0]['header'])
     rc2 = Controller(paths, run_async=False)
     rg2 = {}
     rc2.on_cards = lambda cards, total, more: rg2.update(cards=cards)
     rc2.on_status = lambda t: None
     rc2.selected = {'bibl.txt'}
     asked = {}
-    rc2.on_ask_continue = lambda name, hist, cont, start: asked.update(n=len(hist), hist=hist, cont=cont, start=start)
+    rc2.on_ask_continue = lambda name, hist, cont, goto, total: asked.update(n=len(hist), hist=hist, cont=cont, goto=goto, total=total)
     rc2.set_tab('read')
     check('прошлое место помнится: предложено продолжить', asked.get('n', 0) >= 1 and asked['hist'][-1][2], str(asked))
-    asked['start']()
-    check('«С начала» — блок 1', 'Блок 1' in rg2['cards'][0]['header'])
+    check('диалог знает число страниц', asked['total'] >= 1, str(asked['total']))
+    asked['goto'](1)
+    check('«Страница 1» — первая страница', 'Страница 1[/b]' in rg2['cards'][0]['header'], rg2['cards'][0]['header'])
     rc2.set_tab('search'); rc2.reading = None; rc2._states.pop('read', None); rc2.set_tab('read')
     asked['cont'](asked['hist'][-1][0])
-    check('«Продолжить» — с последнего места', 'Блок' in rg2['cards'][0]['header'] and rg2['cards'][0]['header'] != '')
+    check('«Продолжить» — с последнего места', 'Страница' in rg2['cards'][0]['header'] and rg2['cards'][0]['header'] != '')
     # лимит символов: большой блок — один; выбор книг изменился — результаты вкладки очищаются
     rc4 = Controller(paths, run_async=False)
     rc4.on_cards = lambda *a: None; msgs4 = []; rc4.on_status = msgs4.append
@@ -450,7 +451,7 @@ try:
     rc4.selected = set(); rc4.selection_status()
     check('статус без книг', 'Выберите книги' in msgs4[-1], msgs4[-1])
     rc4.selected = {'bibl.txt'}; rc4.selection_status()
-    check('статус: алиас книги', 'Книги:' in msgs4[-1], msgs4[-1])
+    check('статус: алиас книги', msgs4[-1].startswith('Выбран') and 'книг' in msgs4[-1].lower(), msgs4[-1])
     check('склонение', [rc4._books_word(n) for n in (4, 5, 21)] == ['книги', 'книг', 'книга'])
     rc3 = Controller(paths, run_async=False)
     rc3.on_cards = lambda *a: None; rc3.on_status = lambda t: None

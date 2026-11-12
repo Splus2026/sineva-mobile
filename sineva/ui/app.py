@@ -433,18 +433,23 @@ class SearchScreen(Screen):
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
-        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None)
-        self.status_slot.bind(minimum_height=self.status_slot.setter('height'))
-        self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — блоки пойдут подряд.' if reading else
+        # окно статуса фиксированной высоты (поиск — 3 строки, чтение — 2) с прокруткой: нижняя часть экрана не скачет
+        self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — страницы пойдут подряд.' if reading else
                              'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
+        self.status_sv = ScrollView(size_hint_y=None, bar_width=dp(3), do_scroll_x=False,
+                                    height=sp(13) * 1.3 * (2 if reading else 3) + dp(10))
+        self.status_sv.add_widget(self.status)
+        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status_sv.height, dp(37)))
+        self._draw_ms = self._swap_ms = None
+        self._nav = None
         self.sv, self.box = vlist()
         self._active = None
         self._suffix = ''
         self._base = ''
         if not reading:
             root.add_widget(top)
-        self.status_slot.add_widget(self.status)
+        self.status_slot.add_widget(self.status_sv)
         self.dot = StatusDot()
         dot_col = BoxLayout(size_hint=(None, 1), width=dp(18), padding=(dp(2), dp(4), 0, 0))
         dot_col.add_widget(self.dot)
@@ -656,23 +661,37 @@ class SearchScreen(Screen):
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
         self.status_slot.clear_widgets()
-        self.status_slot.add_widget(self.actions if visible else self.status)
+        self.status_slot.add_widget(self.actions if visible else self.status_sv)
 
     def search(self):
         self.input.focus = False
         self.ctl.submit_query(self.input.text)
 
     def set_status(self, text):
-        if not text.startswith('Запрос'):
-            self._suffix = ''
         self._base = text
-        self.status.text = escape_markup(text + self._suffix)
+        self._show_status()
+
+    def _show_status(self):
+        """Текст статуса: основное сообщение + время отрисовки/«своп» (только для сообщений о поиске и странице)."""
+        base, text = self._base, self._base
+        d, w = self._draw_ms, self._swap_ms
+        if base.startswith('Поиск ') and not self.reading_screen:
+            if d is not None:
+                text += f", отрисовка {d:.0f} мс. Итого {self.ctl.search_ms + d:.0f} мс"
+            if w is not None and self._nav:
+                text += f" · своп {w:.0f} мс, страница {self._nav['pos']} из {self._nav['total']}"
+        elif ', страница ' in base and self.reading_screen:
+            if d is not None:
+                text += f", отрисовка {d:.0f} мс"
+            if w is not None:
+                text += f", своп {w:.0f} мс"
+        self.status.text = escape_markup(text)
+        self.status_sv.scroll_y = 1
 
     def show_cards(self, cards, total, nav):
         """Показывается один блок. Сначала текст первого экрана (жёлтый индикатор), остальные куски блока
            дорисовываются по одному на кадр; когда готов весь блок — индикатор зеленеет."""
         t0 = time.time()
-        self._suffix = ''
         self.dot.set(None)
         ctl = self.ctl
         self._tok += 1
@@ -681,6 +700,7 @@ class SearchScreen(Screen):
         reading = ctl.reading
         fresh = bool(reading and reading.pop('fresh', False))
         keys = [c['key'] for c in cards]
+        keys_changed = keys != self._keys
         if keys != self._keys:                               # другой блок: выделение прежнего больше не нужно
             self.app.cur_sel = None
             self.app.refresh_actions()
@@ -689,6 +709,11 @@ class SearchScreen(Screen):
                                                                and keys != self._keys) else 0
         self._last_pos = new_pos
         swiped = self._swiped
+        self._nav = nav
+        if keys != self._keys and cards:                      # замер: первая отрисовка — «отрисовка», при листании — «своп»
+            self._pending_kind = 'swap' if direction else 'draw'
+            if not direction:
+                self._draw_ms = self._swap_ms = None
         ghost = self._snapshot() if direction and not swiped else None
         self.update_nav(nav)
 
@@ -708,13 +733,19 @@ class SearchScreen(Screen):
                 self.box.add_widget(mlabel('Ничего не найдено', color=GRAY))
             return
 
+        kind = self.__dict__.get('_pending_kind') if (keys_changed) else None
+
         def done():
             if tok != self._tok:
                 return
             built = (time.time() - t0) * 1000
             self.dot.set('green')
-            self._suffix = f" · блок нарисован за {built:.0f} мс"
-            self.status.text = escape_markup(self._base + self._suffix)
+            if kind == 'swap':
+                self._swap_ms = built
+            elif kind == 'draw':
+                self._draw_ms = built
+            if kind:
+                self._show_status()
         w = self._card(cards[0], tok, done)
         self._cards.append(w)
         self.box.add_widget(w)
@@ -1167,7 +1198,7 @@ class SettingsScreen(Screen):
             self.set_btn.background_color = GRAY
             return
         self.set_box.padding = (dp(12), dp(8), dp(8), dp(8))
-        self.set_box.add_widget(mlabel('Текст блоков'))
+        self.set_box.add_widget(mlabel('Текст страниц'))
         self.set_box.add_widget(segmented(
             [('Полный', 0), ('Краткий', 1), ('Отметки', 2)],
             2 if self.ctl.marks_only() else (1 if self.ctl.config.get_bool('brief_view', False) else 0),
@@ -1701,8 +1732,9 @@ class SinevaApp(App):
         if pop is not None:
             pop.dismiss()
 
-    def ask_continue(self, book, history, cont, start):
-        """Окно чтения: первые предложения последних прочитанных блоков (последний — снизу); «Продолжить» — с выбранного."""
+    def ask_continue(self, book, history, cont, goto, total):
+        """Окно чтения: первые предложения последних прочитанных страниц (последняя — снизу); «Продолжить» — с выбранной;
+           «Страница» — переход на любую страницу 1…total."""
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
         state = {'sel': history[-1][0] if history else None}
         listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
@@ -1721,12 +1753,41 @@ class SinevaApp(App):
                 b.bind(on_release=lambda *_a, r=rowid: (state.__setitem__('sel', r), fill()))
                 listing.add_widget(b)
         fill()
-        box.add_widget(mlabel(f"«{escape_markup(book)}»: с какого блока продолжить?", color=(1, 1, 1, 1), font_size=sp(14)))
+        box.add_widget(mlabel(f"«{escape_markup(book)}»: с какой страницы продолжить?", color=(1, 1, 1, 1), font_size=sp(14)))
         box.add_widget(sv)
         row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
         pop = top_popup('Режим чтения', box, min(Window.height * 0.8, dp(150) + dp(60) * max(1, len(history))))
         row.add_widget(btn('Продолжить', lambda: (pop.dismiss(), cont(state['sel']))))
-        row.add_widget(btn('С начала', lambda: (pop.dismiss(), start()), color=GRAY))
+
+        def ask_page():
+            inp = TextInput(text='1', multiline=False, input_filter='int', size_hint_x=0.34, font_size=sp(18),
+                            halign='center')
+            line = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+            line.add_widget(mlabel('Страница', color=(1, 1, 1, 1), font_size=sp(16)))
+            line.add_widget(inp)
+            line.add_widget(mlabel(f"из {total}", color=(1, 1, 1, 1), font_size=sp(16)))
+            b2 = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+            b2.add_widget(line)
+            r2 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+            p2 = top_popup('Перейти на страницу', b2, dp(190))
+
+            def go_page(*_a):
+                try:
+                    n = int(inp.text or 1)
+                except ValueError:
+                    n = 1
+                n = max(1, min(total, n))
+                p2.dismiss()
+                pop.dismiss()
+                goto(n)
+            r2.add_widget(btn('Перейти', go_page))
+            r2.add_widget(btn('Отмена', lambda: p2.dismiss(), color=GRAY))
+            b2.add_widget(r2)
+            inp.bind(on_text_validate=go_page)
+            p2.open()
+            inp.focus = True
+            Clock.schedule_once(lambda dt: inp.select_all(), 0.2)
+        row.add_widget(btn('Страница', ask_page, color=GRAY))
         row.add_widget(btn('Отмена', lambda: (pop.dismiss(), self.go_tab(getattr(self, '_prev_tab', 'search') or 'search')),
                            color=GRAY))
         box.add_widget(row)

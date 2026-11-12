@@ -62,11 +62,12 @@ class Controller:
         self.tab = 'search'                     # активная вкладка с карточками: 'search' | 'read'
         self._states = {}                       # сохранённые состояния неактивной вкладки
         self.dirty = set()                      # вкладки, карточки которых устарели (шрифт, вид) и перерисуются при входе
+        self.search_ms = 0.0                    # время последнего поиска (для строки «Итого»)
         self.win_start = 0                      # индекс первой показанной карточки (окно ≤ WINDOW карточек)
         self.pending_append = None              # {'drop': n, 'new': m} — «Показать ещё»: интерфейс дорисовывает, а не перестраивает
         self.reading = None                     # режим чтения: {'book','last','has_next','total'}
         self.on_sync = None                     # (состояние 'start'|'done'|'error', текст) — окно «Синхронизация»
-        self.on_ask_continue = None             # (название книги, [(rowid, номер, первое предложение)], продолжить(rowid), с_начала())
+        self.on_ask_continue = None             # (название книги, [(rowid, номер, первое предложение)], продолжить(rowid), перейти(номер страницы), всего страниц)
         self._indexing_names = set()
 
         # колбэки интерфейса
@@ -273,15 +274,22 @@ class Controller:
     def _books_word(n: int) -> str:
         return 'книга' if n % 10 == 1 and n % 100 != 11 else ('книги' if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else 'книг')
 
+    @staticmethod
+    def _plural(n: int, one: str, few: str, many: str) -> str:
+        return one if n % 10 == 1 and n % 100 != 11 else (few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many)
+
     def selection_status(self) -> None:
-        """Статус до запроса: алиасы отобранных книг (не больше трёх, иначе «4 книги»)."""
+        """Статус до запроса: «Выбрана книга <алиас>» или «Выбрано 10 книг» (до трёх книг — по алиасам)."""
         books = self.selected_books()
         if not books:
             self.on_status("Выберите книги на вкладке «Книги»")
+        elif len(books) == 1:
+            self.on_status(f"Выбрана книга {books[0].display}")
         elif len(books) <= 3:
-            self.on_status("Книги: " + ', '.join(b.display for b in books) + " · введите слово и нажмите «Поиск»")
+            self.on_status("Выбраны книги: " + ', '.join(b.display for b in books))
         else:
-            self.on_status(f"Выбрано: {len(books)} {self._books_word(len(books))} · введите слово и нажмите «Поиск»")
+            n = len(books)
+            self.on_status(f"Выбрано {n} {self._books_word(n)}")
 
     def _apply(self, outcome: SearchOutcome, token: int) -> None:
         if token != self._token:
@@ -298,7 +306,15 @@ class Controller:
             self.on_status('; '.join(outcome.errors))
         else:
             mode = '/'.join(sorted(outcome.modes)) or '—'
-            self.on_status(f"Запрос '{self.query.strip()}', найдено блоков: {visible} · поиск {outcome.elapsed_ms:.0f} мс "
+            books = self.selected_books()
+            n = len(books)
+            where = (f"в книге {books[0].display}" if n == 1 else
+                     f"в {n} {self._plural(n, 'книге', 'книгах', 'книгах')}")
+            frag = len(outcome.word_counts) or len(outcome.fragments)
+            self.search_ms = outcome.elapsed_ms
+            self.on_status(f"Поиск '{self.query.strip()}' {where}. Найдено {frag} "
+                           f"{self._plural(frag, 'фрагмент', 'фрагмента', 'фрагментов')} на {visible} "
+                           f"{self._plural(visible, 'странице', 'страницах', 'страницах')} за {outcome.elapsed_ms:.0f} мс "
                            f"(индекс {outcome.index_ms:.0f} мс, {mode})"
                            + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
 
@@ -446,7 +462,7 @@ class Controller:
         text, hl, segments, paging = self._view(key, item, brief)
         layers = self._layers(item, segments)
         spans = layers['marks']
-        header = (f"[b]Блок {item['ordinal']}[/b] [size=12sp][color=777777]из {self.reading['total']} · "
+        header = (f"[b]Страница {item['ordinal']}[/b] [size=12sp][color=777777]из {self.reading['total']} · "
                   f"поз. {escape_markup(str(item.get('position', '')))}[/color][/size]") if self.reading and 'ordinal' in item \
             else self.search.header_markup(item, i + 1)
         return {'key': key, 'book': item['book'], 'header': header,
@@ -997,15 +1013,29 @@ class Controller:
             number = idx.ordinal(saved) if saved > first else 0
         finally:
             idx.close()
-        self.on_status(f"Чтение: «{book.display}»")
+        self.on_status(f"Выбрана книга {book.display}")
         if number > 1 and self.on_ask_continue:
             hist = self.read_history(book)
-            self.on_ask_continue(book.display, hist,
-                                 lambda rowid: self._read_from(book, rowid), lambda: self._read_from(book, first))
+            idx = BookIndex(book.index_path)
+            try:
+                total = idx.topic_count()
+            finally:
+                idx.close()
+            self.on_ask_continue(book.display, hist, lambda rowid: self._read_from(book, rowid),
+                                 lambda n: self.read_page(book, n), total)
         elif number > 1:
             self._read_from(book, saved)
         else:
             self._read_from(book, first)
+
+    def read_page(self, book, number: int) -> None:
+        """Чтение с указанной страницы (1…N)."""
+        idx = BookIndex(book.index_path)
+        try:
+            rowid = idx.rowid_at(max(1, int(number))) or idx.first_rowid()
+        finally:
+            idx.close()
+        self._read_from(book, rowid)
 
     def _remember_read(self, file_name: str, rows) -> None:
         """Последние 10 прочитанных блоков книги (rowid, от старых к новым) — для окна «Продолжить»."""
@@ -1062,7 +1092,7 @@ class Controller:
         """Начинает чтение с блока rowid=start: показывается один блок, следующие подгружаются про запас."""
         rows, total, has_next, base = self._read_rows(book, start, self.config.get_int('page_size', 3))
         if not rows:
-            self.on_status("В книге нет блоков")
+            self.on_status("В книге нет страниц")
             return
         outcome = SearchOutcome(query='')
         outcome.results = self._read_items(book, rows, base)
@@ -1075,7 +1105,7 @@ class Controller:
         self.offsets.clear()
         self._reading_seen(book, rows[0])
         self._publish()
-        self.on_status(f"Чтение: «{book.display}» · блок {base} из {total}")
+        self.on_status(f"Выбрана книга {book.display}, страница {base} из {total}")
 
     def _reading_seen(self, book, row) -> None:
         """Прочитанным считается показанный блок: от него будет предложено продолжить."""
@@ -1129,7 +1159,7 @@ class Controller:
             self._reading_seen(book, (item['rowid'],))
             self.pending_append = None
             self._publish()
-            self.on_status(f"Чтение: «{book.display}» · блок {item['ordinal']} из {self.reading['total']}")
+            self.on_status(f"Выбрана книга {book.display}, страница {item['ordinal']} из {self.reading['total']}")
             self._prefetch_read(book)
             return
         items = self._items()

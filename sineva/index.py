@@ -252,6 +252,11 @@ class BookIndex:
         """Порядковый номер топика (1…N) по rowid."""
         return int(self.conn.execute(f"SELECT count(*) FROM {DOCS_TABLE} WHERE rowid <= ?", (rowid,)).fetchone()[0])
 
+    def rowid_at(self, number: int) -> int:
+        """rowid топика с порядковым номером number (1…N); 0, если такого нет."""
+        r = self.conn.execute(f"SELECT rowid FROM {DOCS_TABLE} ORDER BY rowid LIMIT 1 OFFSET ?", (max(0, number - 1),)).fetchone()
+        return int(r[0]) if r else 0
+
     def first_rowid(self) -> int:
         r = self.conn.execute(f"SELECT min(rowid) FROM {DOCS_TABLE}").fetchone()
         return int(r[0]) if r and r[0] is not None else 0
