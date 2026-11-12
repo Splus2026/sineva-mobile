@@ -314,7 +314,7 @@ class Controller:
             self.search_ms = outcome.elapsed_ms
             self.on_status(f"Поиск '{self.query.strip()}' {where}. Найдено {frag} "
                            f"{self._plural(frag, 'фрагмент', 'фрагмента', 'фрагментов')} на {visible} "
-                           f"{self._plural(visible, 'странице', 'страницах', 'страницах')} за {outcome.elapsed_ms:.0f} мс "
+                           f"стр. за {outcome.elapsed_ms:.0f} мс "
                            f"(индекс {outcome.index_ms:.0f} мс, {mode})"
                            + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
 
@@ -1105,7 +1105,7 @@ class Controller:
         self.offsets.clear()
         self._reading_seen(book, rows[0])
         self._publish()
-        self.on_status(f"Выбрана книга {book.display}, страница {base} из {total}")
+        self.on_status(f"Выбрана книга {book.display}, стр. {base} из {total}")
 
     def _reading_seen(self, book, row) -> None:
         """Прочитанным считается показанный блок: от него будет предложено продолжить."""
@@ -1159,7 +1159,7 @@ class Controller:
             self._reading_seen(book, (item['rowid'],))
             self.pending_append = None
             self._publish()
-            self.on_status(f"Выбрана книга {book.display}, страница {item['ordinal']} из {self.reading['total']}")
+            self.on_status(f"Выбрана книга {book.display}, стр. {item['ordinal']} из {self.reading['total']}")
             self._prefetch_read(book)
             return
         items = self._items()

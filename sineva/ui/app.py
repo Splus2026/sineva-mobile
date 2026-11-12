@@ -441,7 +441,8 @@ class SearchScreen(Screen):
                                     height=sp(13) * 1.3 * (2 if reading else 3) + dp(10))
         self.status_sv.add_widget(self.status)
         self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status_sv.height, dp(37)))
-        self._draw_ms = self._swap_ms = None
+        self._m = {'draw': [None, None], 'swap': [None, None]}      # [первый экран, вся страница], мс
+        self._chars = None                                           # (знаков в первом куске, знаков всего)
         self._nav = None
         self.sv, self.box = vlist()
         self._active = None
@@ -674,17 +675,22 @@ class SearchScreen(Screen):
     def _show_status(self):
         """Текст статуса: основное сообщение + время отрисовки/«своп» (только для сообщений о поиске и странице)."""
         base, text = self._base, self._base
-        d, w = self._draw_ms, self._swap_ms
+        def pair(v):                                          # «первый экран/вся страница»; пока дорисовывается — «200/…»
+            f, full = v
+            return None if f is None and full is None else f"{(f if f is not None else full):.0f}/" + (f"{full:.0f}" if full is not None else '…')
+        d, w = pair(self._m['draw']), pair(self._m['swap'])
+        zn = f", {self._chars[0]}/{self._chars[1]} зн" if self._chars and (d or w) else ''
         if base.startswith('Поиск ') and not self.reading_screen:
-            if d is not None:
-                text += f", отрисовка {d:.0f} мс. Итого {self.ctl.search_ms + d:.0f} мс"
-            if w is not None and self._nav:
-                text += f" · своп {w:.0f} мс, страница {self._nav['pos']} из {self._nav['total']}"
-        elif ', страница ' in base and self.reading_screen:
-            if d is not None:
-                text += f", отрисовка {d:.0f} мс"
-            if w is not None:
-                text += f", своп {w:.0f} мс"
+            if d:
+                full = self._m['draw'][1]
+                text += f", отрисовка {d} мс{zn}" + (f". Итого {self.ctl.search_ms + full:.0f} мс" if full is not None else '')
+            if w and self._nav:
+                text += f" · своп {w} мс, стр. {self._nav['pos']} из {self._nav['total']}"
+        elif ', стр. ' in base and self.reading_screen:
+            if d:
+                text += f", отрисовка {d} мс{zn}"
+            if w:
+                text += f", своп {w} мс"
         self.status.text = escape_markup(text)
         self.status_sv.scroll_y = 1
 
@@ -712,8 +718,9 @@ class SearchScreen(Screen):
         self._nav = nav
         if keys != self._keys and cards:                      # замер: первая отрисовка — «отрисовка», при листании — «своп»
             self._pending_kind = 'swap' if direction else 'draw'
+            self._m['swap'] = [None, None]
             if not direction:
-                self._draw_ms = self._swap_ms = None
+                self._m['draw'] = [None, None]
         ghost = self._snapshot() if direction and not swiped else None
         self.update_nav(nav)
 
@@ -740,15 +747,22 @@ class SearchScreen(Screen):
                 return
             built = (time.time() - t0) * 1000
             self.dot.set('green')
-            if kind == 'swap':
-                self._swap_ms = built
-            elif kind == 'draw':
-                self._draw_ms = built
             if kind:
+                self._m[kind][1] = built
+                if self._m[kind][0] is None:
+                    self._m[kind][0] = built
                 self._show_status()
+
+        def first_frame(dt):                                  # первый экран: первый кусок построен и показан кадром
+            if tok == self._tok and kind and self._m[kind][0] is None:
+                self._m[kind][0] = (time.time() - t0) * 1000
+                self._show_status()
+        c0 = cards[0]['chunks'][0]
+        self._chars = (c0[1] - c0[0], len(cards[0]['text']))
         w = self._card(cards[0], tok, done)
         self._cards.append(w)
         self.box.add_widget(w)
+        Clock.schedule_once(first_frame, 0)
         if swiped:
             Clock.schedule_once(lambda dt: self._drop_cover(), 0.12)
         elif direction:

@@ -214,7 +214,7 @@ try:
     check('короткий запрос — подсказка, поиска нет', 'не менее' in got['status'] and got['cards'] is None)
     ctl.submit_query('довер')
     check('кнопка «Поиск» выдала карточки', got['cards'] and got['total'] >= 2, str(got['status']))
-    check('в статусе запрос, фрагменты и страницы', "Поиск '" in got['status'] and 'Найдено' in got['status'] and 'стран' in got['status'], got['status'])
+    check('в статусе запрос, фрагменты и страницы', "Поиск '" in got['status'] and 'Найдено' in got['status'] and 'стр.' in got['status'], got['status'])
     check('по умолчанию топик целиком', all(not c['expanded'] and c['segments'] == [(0, 0, len(c['text']))] for c in got['cards']))
     check('в карточке есть жёлтые участки', any(c['hl'] for c in got['cards']))
     n_cards = len(got['cards'])
