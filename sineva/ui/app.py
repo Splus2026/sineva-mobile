@@ -546,6 +546,7 @@ class SearchScreen(Screen):
                 self.page.remove_widget(g)
         self._ghosts = []
         self._clear_panels()
+        self.sv.do_scroll_y = False                          # на время перетаскивания вертикальная прокрутка выключена
         self._drag = {'panels': dict(self._pre), 'shown': None}      # соседи заранее построены — без паузы в начале жеста
 
     def _build_panel(self, sign):
@@ -590,10 +591,18 @@ class SearchScreen(Screen):
                 self.page.add_widget(pv)
             pv.pos_hint = {'x': off / W + sign, 'y': 0}
 
+    def _unlock_scroll(self):
+        try:
+            self.sv.effect_y.velocity = 0                    # никакого «долёта» прокрутки после жеста
+        except Exception:
+            pass
+        self.sv.do_scroll_y = True
+
     def _drag_end(self, dx, dt):
         d = self._drag
         if d is None:
             return
+        self._unlock_scroll()
         W = max(1.0, float(self.page.width))
         sign = 1 if dx < 0 else -1
         pv = d['panels'].get(sign)
