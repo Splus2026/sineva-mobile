@@ -199,8 +199,7 @@ class SearchService:
     def header_markup(self, item: dict, number: int) -> str:
         meta = item['meta']
         return (f"[b]{number}. {escape_markup(item.get('book_display', ''))}[/b]  "
-                f"[size=12sp][color=777777]ур. {meta['max_level']} · совп. {meta['count_at_max']} · "
-                f"поз. {escape_markup(str(item.get('position', '')))}[/color][/size]")
+                f"[size=12sp][color=777777]ур. {meta['max_level']} · совп. {meta['count_at_max']}[/color][/size]")
 
     def word_markup(self, row: dict) -> str:
         label = escape_markup(row['word']) + f"  ({row['count']})"

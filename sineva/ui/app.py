@@ -816,13 +816,13 @@ class SearchScreen(Screen):
         box.bind(minimum_height=box.setter('height'))
         left = mlabel(c['header'], font_size=sp(14))
         fs = self.ctl.config.get_int('font_size', 16)
-        right = Label(text=f"Шрифт: {fs}  [ref=up][size=26sp][b]  +  [/b][/size][/ref][ref=down][size=26sp][b]  −  [/b][/size][/ref]",
-                      markup=True, color=GRAY, font_size=sp(12), halign='right', valign='middle',
-                      size_hint=(None, 1), width=dp(168))
+        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=52sp][b] + [/b][/size][/ref][ref=down][size=52sp][b] − [/b][/size][/ref]",
+                      markup=True, color=TXT, font_size=sp(14), halign='right', valign='middle',
+                      size_hint=(None, 1), width=dp(215))
         right.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
         right.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
-        head = BoxLayout(size_hint_y=None, height=max(left.height, dp(34)))
-        left.bind(height=lambda w, h: setattr(head, 'height', max(h, dp(34))))
+        head = BoxLayout(size_hint_y=None, height=max(left.height, dp(48)))
+        left.bind(height=lambda w, h: setattr(head, 'height', max(h, dp(48))))
         head.add_widget(left)
         head.add_widget(right)
         key = c['key']
