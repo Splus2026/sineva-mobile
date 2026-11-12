@@ -394,6 +394,24 @@ class StatusDot(Widget):
                 Ellipse(pos=self.pos, size=self.size)
 
 
+class TapHint(Widget):
+    """Значок «двойное касание»: точка и два кольца, как рябь от касания."""
+    def __init__(self, **kw):
+        super().__init__(size_hint=(None, None), size=(dp(14), dp(14)), **kw)
+        self.bind(pos=self._draw, size=self._draw)
+
+    def _draw(self, *a):
+        from kivy.graphics import Ellipse, Line
+        self.canvas.clear()
+        cx, cy = self.center_x, self.center_y
+        with self.canvas:
+            Color(0.45, 0.5, 0.62, 0.9)
+            Ellipse(pos=(cx - dp(2), cy - dp(2)), size=(dp(4), dp(4)))
+            Line(circle=(cx, cy, dp(4.5)), width=1)
+            Color(0.45, 0.5, 0.62, 0.55)
+            Line(circle=(cx, cy, dp(6.8)), width=1)
+
+
 class SearchScreen(Screen):
     def __init__(self, app, reading=False, **kw):
         super().__init__(name='read' if reading else 'search', **kw)
@@ -437,14 +455,17 @@ class SearchScreen(Screen):
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
-        # окно статуса фиксированной высоты (поиск — 3 строки, чтение — 2) с прокруткой: нижняя часть экрана не скачет
-        self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — страницы пойдут подряд.' if reading else
-                             'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
-        self.status.color = GRAY
-        self.status_sv = ScrollView(size_hint_y=None, bar_width=dp(3), do_scroll_x=False,
-                                    height=sp(13) * 1.3 * (2 if reading else 3) + dp(10))
-        self.status_sv.add_widget(self.status)
-        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status_sv.height, dp(37)))
+        # окно статуса фиксированной высоты без прокрутки (поиск — 4 строки, чтение — 3): нижняя часть экрана не скачет,
+        # весь текст виден; слишком длинное обрезается многоточием. Двойное касание окна — размер шрифта.
+        lines = 3 if reading else 4
+        self.status = Label(text='Выберите ровно одну книгу на вкладке «Книги» — страницы пойдут подряд.' if reading else
+                            'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».',
+                            markup=True, color=GRAY, font_size=sp(12), halign='left', valign='top',
+                            size_hint_y=None, height=sp(12) * 1.25 * lines + dp(6), max_lines=lines,
+                            shorten=True, shorten_from='right', split_str=' ')
+        self.status.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+        self.status_sv = self.status
+        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status.height, dp(37)))
         self._m = {'draw': [None, None], 'swap': [None, None]}      # [первый экран, вся страница], мс
         self._chars = None                                           # (знаков в первом куске, знаков всего)
         self._nav = None
@@ -456,8 +477,10 @@ class SearchScreen(Screen):
             root.add_widget(top)
         self.status_slot.add_widget(self.status_sv)
         self.dot = StatusDot()
-        dot_col = BoxLayout(size_hint=(None, 1), width=dp(18), padding=(dp(2), dp(4), 0, 0))
+        dot_col = FloatLayout(size_hint=(None, 1), width=dp(18))
+        self.dot.pos_hint = {'top': 1, 'right': 1}
         dot_col.add_widget(self.dot)
+        dot_col.add_widget(TapHint(pos_hint={'y': 0, 'right': 1}))      # подсказка: двойное касание — размер шрифта
         status_row = self.status_row = BoxLayout(size_hint_y=None)
         status_row.add_widget(self.status_slot)
         status_row.add_widget(dot_col)
@@ -506,7 +529,7 @@ class SearchScreen(Screen):
 
     # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
-        if self.status_slot.collide_point(*touch.pos):
+        if self.status_row.collide_point(*touch.pos):
             # своя проверка двойного касания: у встроенной (is_double_tap) допуск 20 пикселей — пальцем не попасть
             now, last = time.time(), self._last_tap
             if last and now - last[0] < 0.5 and abs(touch.x - last[1]) < dp(70) and abs(touch.y - last[2]) < dp(70):
@@ -753,7 +776,6 @@ class SearchScreen(Screen):
             if w:
                 text += f", своп {w} мс"
         self.status.text = escape_markup(text)
-        self.status_sv.scroll_y = 1
 
     def show_cards(self, cards, total, nav):
         """Показывается один блок. Сначала текст первого экрана (жёлтый индикатор), остальные куски блока
