@@ -8,12 +8,13 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle
+from kivy.graphics import Color, PopMatrix, PushMatrix, Rectangle, Translate
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.floatlayout import FloatLayout
+from kivy.properties import NumericProperty
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.popup import Popup
@@ -395,6 +396,20 @@ class StatusDot(Widget):
                 Ellipse(pos=self.pos, size=self.size)
 
 
+class Track(FloatLayout):
+    """Лента страниц: сдвигается матрицей отрисовки (Translate) без пересчёта раскладки — листание идёт на частоте кадров."""
+    tx = NumericProperty(0)
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        with self.canvas.before:
+            PushMatrix()
+            self._tr = Translate(0, 0)
+        with self.canvas.after:
+            PopMatrix()
+        self.bind(tx=lambda w, v: setattr(self._tr, 'x', v))
+
+
 class SearchScreen(Screen):
     DECIDE_DP = 7          # путь пальца (dp), после которого определяется направление жеста
     HORIZ_MAX = 40         # угол от горизонтали (°): не больше — листание
@@ -481,7 +496,9 @@ class SearchScreen(Screen):
         self.actions.height = top.height * 2 / 3
         self.page = FloatLayout()                        # «страница»: при листании выезжает сбоку
         self.sv.size_hint, self.sv.pos_hint = (1, 1), {'x': 0, 'y': 0}
-        self.page.add_widget(self.sv)
+        self.track = Track(size_hint=(1, 1))
+        self.track.add_widget(self.sv)
+        self.page.add_widget(self.track)
         root.add_widget(self.page)
         # листание блоков: «Назад» — «N из M» — «Далее» (то же делает свайп влево/вправо)
         self.navbar = BoxLayout(size_hint_y=None, height=0, spacing=dp(4), opacity=0)
@@ -554,11 +571,13 @@ class SearchScreen(Screen):
         if self._drag:
             for pv in self._drag['panels'].values():
                 if pv is not None and pv.parent is not None and pv is not self._cover:
-                    self.page.remove_widget(pv)
+                    self.track.remove_widget(pv)
         self._drag = None
 
     def _drag_begin(self):
         Animation.cancel_all(self.sv)
+        Animation.cancel_all(self.track)
+        self.track.tx = 0
         for g in self.__dict__.get('_ghosts', []):
             if g.parent is not None:
                 self.page.remove_widget(g)
@@ -572,7 +591,7 @@ class SearchScreen(Screen):
         if card is None:
             return None
         pv, box = vlist()
-        pv.size_hint, pv.pos_hint = (1, 1), {'x': sign, 'y': 0}
+        pv.size_hint, pv.pos_hint = (1, 1), {'x': float(sign), 'y': 0}
         box.add_widget(self._card(card, None, None, peek=True))
         return pv
 
@@ -600,14 +619,11 @@ class SearchScreen(Screen):
         sign = 1 if dx < 0 else -1
         pv = self._panel(sign)
         if d['shown'] is not None and d['shown'] is not pv and d['shown'].parent is not None:
-            self.page.remove_widget(d['shown'])
+            self.track.remove_widget(d['shown'])
         d['shown'] = pv
-        off = dx if pv is not None else dx * 0.3             # с краю списка страница упруго сопротивляется
-        self.sv.pos_hint = {'x': off / W, 'y': 0}
-        if pv is not None:
-            if pv.parent is None:
-                self.page.add_widget(pv)
-            pv.pos_hint = {'x': off / W + sign, 'y': 0}
+        if pv is not None and pv.parent is None:
+            self.track.add_widget(pv)                        # соседняя страница стоит рядом (±ширина), сдвигается вся лента
+        self.track.tx = dx if pv is not None else dx * 0.3   # с краю списка страница упруго сопротивляется
 
     def _unlock_scroll(self):
         try:
@@ -628,8 +644,7 @@ class SearchScreen(Screen):
         commit = pv is not None and (abs(dx) > W * 0.28 or fast)
         self._anim_busy = True
         if commit:
-            Animation(pos_hint={'x': -sign, 'y': 0}, d=self._dur(), t='out_quad').start(self.sv)
-            anim = Animation(pos_hint={'x': 0, 'y': 0}, d=self._dur(), t='out_quad')
+            anim = Animation(tx=-sign * W, d=self._dur(), t='out_quad')
 
             def finish(*a):
                 self._anim_busy = False
@@ -639,28 +654,23 @@ class SearchScreen(Screen):
                 self.ctl.go(sign)
                 Clock.schedule_once(lambda dt: self._drop_cover(), 0.8)   # страховка, если блок не сменился
             anim.bind(on_complete=finish)
-            anim.start(pv)
+            anim.start(self.track)
         else:
-            Animation(pos_hint={'x': 0, 'y': 0}, d=self._dur(), t='out_quad').start(self.sv)
-            shown = d['shown']
-            anim = Animation(pos_hint={'x': float(sign), 'y': 0}, d=self._dur(), t='out_quad')
+            anim = Animation(tx=0, d=self._dur(), t='out_quad')
 
             def back(*a):
                 self._anim_busy = False
                 self._clear_panels()
-                self.sv.pos_hint = {'x': 0, 'y': 0}
+                self.track.tx = 0
             anim.bind(on_complete=back)
-            if shown is not None and shown.parent is not None:
-                anim.start(shown)
-            else:
-                Clock.schedule_once(back, 0.18)
+            anim.start(self.track)
 
     def _drop_cover(self):
         pv, self._cover = self._cover, None
         self._swiped = False
-        self.sv.pos_hint = {'x': 0, 'y': 0}
+        self.track.tx = 0
         if pv is not None and pv.parent is not None:
-            self.page.remove_widget(pv)
+            self.track.remove_widget(pv)
 
     def refresh_card(self, key):
         """Слои карточки перерисовываются через refresh_layers."""
@@ -808,7 +818,6 @@ class SearchScreen(Screen):
         self.box.add_widget(w)
         Clock.schedule_once(first_frame, 0)
         if swiped:
-            self.sv.pos_hint = {'x': 0, 'y': 0}               # новая страница построена: вернуть на место, соседку убрать
             Clock.schedule_once(lambda dt: self._drop_cover(), 0.12)
         elif direction:
             self.turn(direction, ghost)

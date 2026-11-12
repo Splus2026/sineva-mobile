@@ -50,7 +50,8 @@ for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'Che
     mod('kivy.uix.' + n, **{c: W})
 mod('kivy.uix'); mod('kivy.uix.widget', Widget=W); mod('kivy.uix.screenmanager', NoTransition=W, Screen=W, ScreenManager=W); mod('kivy.uix.image', Image=W)
 mod('kivy.uix.modalview', ModalView=type('ModalView', (), {})); mod('kivy.uix.filechooser', FileChooserListView=W)
-mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W, Ellipse=W, Line=W)
+mod('kivy.graphics', Color=W, RoundedRectangle=W, Rectangle=W, Ellipse=W, Line=W, PushMatrix=W, PopMatrix=W, Translate=W)
+mod('kivy.properties', NumericProperty=lambda v=0: v)
 class _CV(_Ctx):
     pass
 
