@@ -814,15 +814,19 @@ class SearchScreen(Screen):
     def _card(self, c, tok=None, on_done=None, peek=False):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
-        left = mlabel(c['header'], font_size=sp(14))
+        left = mlabel(c['header'], font_size=sp(14), color=ACCENT)
         fs = self.ctl.config.get_int('font_size', 16)
-        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=52sp][b] + [/b][/size][/ref][ref=down][size=52sp][b] − [/b][/size][/ref]",
-                      markup=True, color=TXT, font_size=sp(14), halign='right', valign='middle',
-                      size_hint=(None, 1), width=dp(215))
+        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b] + [/b][/size][/ref][ref=down][size=35sp][b] − [/b][/size][/ref]",
+                      markup=True, color=ACCENT, font_size=sp(fs), halign='right', valign='middle',
+                      size_hint=(None, 1), width=dp(150 + max(0, fs - 16) * 6))
         right.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
         right.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
-        head = BoxLayout(size_hint_y=None, height=max(left.height, dp(48)))
-        left.bind(height=lambda w, h: setattr(head, 'height', max(h, dp(48))))
+        head = BoxLayout(size_hint_y=None, height=dp(48))
+
+        def fit(*_):
+            head.height = max(left.height, right.texture_size[1] + dp(10), dp(48))
+        left.bind(height=fit)
+        right.bind(texture_size=fit)
         head.add_widget(left)
         head.add_widget(right)
         key = c['key']
