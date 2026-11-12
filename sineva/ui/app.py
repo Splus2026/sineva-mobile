@@ -447,6 +447,7 @@ class SearchScreen(Screen):
         self._chars = None                                           # (знаков в первом куске, знаков всего)
         self._nav = None
         self.sv, self.box = vlist()
+        self.sv.scroll_distance = dp(14)                 # прокрутка начинается позже, чем распознаётся направление жеста
         self._active = None
         self._suffix = ''
         self._base = ''
@@ -508,7 +509,6 @@ class SearchScreen(Screen):
         self.sv.do_scroll_y = True                           # страховка: прокрутка не должна остаться выключенной
         if self.collide_point(*touch.pos) and not self._anim_busy:
             touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
-            self.sv.do_scroll_y = False                      # направление ещё не ясно: страница стоит на месте
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
@@ -523,12 +523,12 @@ class SearchScreen(Screen):
                     self._drag_begin()
                 elif ang >= 60:                              # почти вертикаль: прокрутка, листание заблокировано
                     touch.ud['swd'] = False
-                    self.sv.do_scroll_y = True
                 # 30…60° (диагональ): ни листания, ни прокрутки, пока палец не выпрямится
             if touch.ud.get('swd'):
                 self._drag_move(dx)
                 return True
             if touch.ud.get('swd') is None:
+                self.sv.scroll_y = st[3]                     # диагональ: страница не смещается
                 return True
         return super().on_touch_move(touch)
 
@@ -538,8 +538,12 @@ class SearchScreen(Screen):
         if st and touch.ud.get('swd'):
             self._drag_end(touch.x - st[0], time.time() - st[2])
             return True
-        if st:
-            self.sv.do_scroll_y = True
+        if st and touch.ud.get('swd') is None:
+            try:
+                self.sv.effect_y.velocity = 0                # диагональный жест не должен «доезжать» прокруткой
+            except Exception:
+                pass
+            self.sv.scroll_y = st[3]
         return res
 
     def _clear_panels(self):
@@ -934,6 +938,7 @@ class BooksScreen(Screen):
         self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(6))
         root.add_widget(self.progress)
         self.sv, self.box = vlist()
+        self.sv.scroll_distance = dp(14)                 # прокрутка начинается позже, чем распознаётся направление жеста
         root.add_widget(self.sv)
         self.add_widget(root)
         self._rows = []
