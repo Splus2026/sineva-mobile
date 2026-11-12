@@ -819,7 +819,7 @@ class SearchScreen(Screen):
         right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b] + [/b][/size][/ref][ref=down][size=35sp][b] − [/b][/size][/ref]",
                       markup=True, color=ACCENT, font_size=sp(fs), halign='right', valign='middle',
                       size_hint=(None, 1), width=dp(150 + max(0, fs - 16) * 6))
-        right.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+        right.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))      # высота текста своя: иначе высота строки растёт бесконечно
         right.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
         head = BoxLayout(size_hint_y=None, height=dp(48))
 
