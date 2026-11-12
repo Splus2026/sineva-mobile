@@ -1,5 +1,6 @@
 """Интерфейс «Синева Mobile» на Kivy. Вся логика — в sineva.controller.Controller; здесь только виджеты."""
 import os
+import math
 import time
 
 from kivy.animation import Animation
@@ -504,23 +505,30 @@ class SearchScreen(Screen):
 
     # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
+        self.sv.do_scroll_y = True                           # страховка: прокрутка не должна остаться выключенной
         if self.collide_point(*touch.pos) and not self._anim_busy:
             touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
+            self.sv.do_scroll_y = False                      # направление ещё не ясно: страница стоит на месте
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
         st = touch.ud.get('sw0')
         if st and not touch.ud.get('pinch') and not self._anim_busy:
             dx, dy = touch.x - st[0], touch.y - st[1]
-            if touch.ud.get('swd') is None:
-                if abs(dx) > dp(8) and abs(dx) > 1.5 * abs(dy):
+            if touch.ud.get('swd') is None and dx * dx + dy * dy > dp(10) ** 2:
+                ang = math.degrees(math.atan2(abs(dy), abs(dx)))      # угол от горизонтали
+                if ang <= 30:                                # почти горизонталь: листание, прокрутка заблокирована
                     touch.ud['swd'] = True
+                    self.sv.scroll_y = st[3]
                     self._drag_begin()
-                elif abs(dy) > dp(14):
+                elif ang >= 60:                              # почти вертикаль: прокрутка, листание заблокировано
                     touch.ud['swd'] = False
+                    self.sv.do_scroll_y = True
+                # 30…60° (диагональ): ни листания, ни прокрутки, пока палец не выпрямится
             if touch.ud.get('swd'):
-                self.sv.scroll_y = st[3]                    # во время перетаскивания текст по вертикали не едет
                 self._drag_move(dx)
+                return True
+            if touch.ud.get('swd') is None:
                 return True
         return super().on_touch_move(touch)
 
@@ -530,6 +538,8 @@ class SearchScreen(Screen):
         if st and touch.ud.get('swd'):
             self._drag_end(touch.x - st[0], time.time() - st[2])
             return True
+        if st:
+            self.sv.do_scroll_y = True
         return res
 
     def _clear_panels(self):
