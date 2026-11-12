@@ -396,6 +396,9 @@ class StatusDot(Widget):
 
 
 class SearchScreen(Screen):
+    DECIDE_DP = 7          # путь пальца (dp), после которого определяется направление жеста
+    HORIZ_MAX = 40         # угол от горизонтали (°): не больше — листание
+    VERT_MIN = 60          # не меньше — прокрутка; между ними — диагональ, страница не двигается
     def __init__(self, app, reading=False, **kw):
         super().__init__(name='read' if reading else 'search', **kw)
         self.app, self.ctl, self.reading_screen = app, app.ctl, reading
@@ -447,7 +450,7 @@ class SearchScreen(Screen):
         self._chars = None                                           # (знаков в первом куске, знаков всего)
         self._nav = None
         self.sv, self.box = vlist()
-        self.sv.scroll_distance = dp(14)                 # прокрутка начинается позже, чем распознаётся направление жеста
+        self.sv.scroll_distance = dp(10)                 # прокрутка начинается позже, чем распознаётся направление жеста
         self._active = None
         self._suffix = ''
         self._base = ''
@@ -515,17 +518,18 @@ class SearchScreen(Screen):
         st = touch.ud.get('sw0')
         if st and not touch.ud.get('pinch') and not self._anim_busy:
             dx, dy = touch.x - st[0], touch.y - st[1]
-            if touch.ud.get('swd') is None and dx * dx + dy * dy > dp(10) ** 2:
+            if touch.ud.get('swd') is None and dx * dx + dy * dy > dp(self.DECIDE_DP) ** 2:
                 ang = math.degrees(math.atan2(abs(dy), abs(dx)))      # угол от горизонтали
-                if ang <= 30:                                # почти горизонталь: листание, прокрутка заблокирована
+                if ang <= self.HORIZ_MAX:                                # почти горизонталь: листание, прокрутка заблокирована
                     touch.ud['swd'] = True
                     self.sv.scroll_y = st[3]
                     self._drag_begin()
-                elif ang >= 60:                              # почти вертикаль: прокрутка, листание заблокировано
+                elif ang >= self.VERT_MIN:                              # почти вертикаль: прокрутка, листание заблокировано
                     touch.ud['swd'] = False
                 # 30…60° (диагональ): ни листания, ни прокрутки, пока палец не выпрямится
             if touch.ud.get('swd'):
-                self._drag_move(dx)
+                edge = dp(self.DECIDE_DP) * 0.7                  # «мёртвая зона» распознавания вычитается: страница идёт плавно, без скачка
+                self._drag_move(dx - math.copysign(min(abs(dx), edge), dx))
                 return True
             if touch.ud.get('swd') is None:
                 self.sv.scroll_y = st[3]                     # диагональ: страница не смещается
