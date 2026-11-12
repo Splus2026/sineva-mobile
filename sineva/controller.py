@@ -529,6 +529,15 @@ class Controller:
     def card_marks(self, key: str):
         return self.card_layers(key)['marks']
 
+    def swap_min_ms(self) -> int:
+        """Нижний порог времени листания страницы (мс): анимация не короче этого значения."""
+        return max(0, min(1000, self.config.get_int('swap_min_ms', 200)))
+
+    def apply_font(self) -> None:
+        """Новый размер шрифта сразу применяется к показанной странице (без сброса результатов)."""
+        if self.outcome.results:
+            self._publish()
+
     def font_step(self) -> int:
         return max(1, self.config.get_int('font_step', 2))
 

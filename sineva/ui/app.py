@@ -402,6 +402,9 @@ class SearchScreen(Screen):
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
+        self._fontbar_on = False
+        self._fontbar_ev = None
+        self._undo_visible = False
         self._peek_gen = 0               # поколение соседних страниц при перетаскивании
         self._drag = None                # состояние перетаскивания {'panels': {±1: ScrollView}, 'sy': …}
         self._anim_busy = False
@@ -502,6 +505,12 @@ class SearchScreen(Screen):
 
     # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
+        if self.status_slot.collide_point(*touch.pos) and getattr(touch, 'is_double_tap', False):
+            if self._fontbar_on:
+                self._fontbar_hide()
+            else:
+                self._fontbar_show()
+            return True
         if self.collide_point(*touch.pos) and not self._anim_busy:
             touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
         return super().on_touch_down(touch)
@@ -588,8 +597,8 @@ class SearchScreen(Screen):
         commit = pv is not None and (abs(dx) > W * 0.28 or fast)
         self._anim_busy = True
         if commit:
-            Animation(pos_hint={'x': -sign, 'y': 0}, d=0.18, t='out_quad').start(self.sv)
-            anim = Animation(pos_hint={'x': 0, 'y': 0}, d=0.18, t='out_quad')
+            Animation(pos_hint={'x': -sign, 'y': 0}, d=self._dur(), t='out_quad').start(self.sv)
+            anim = Animation(pos_hint={'x': 0, 'y': 0}, d=self._dur(), t='out_quad')
 
             def finish(*a):
                 self._anim_busy = False
@@ -602,9 +611,9 @@ class SearchScreen(Screen):
             anim.bind(on_complete=finish)
             anim.start(pv)
         else:
-            Animation(pos_hint={'x': 0, 'y': 0}, d=0.18, t='out_quad').start(self.sv)
+            Animation(pos_hint={'x': 0, 'y': 0}, d=self._dur(), t='out_quad').start(self.sv)
             shown = d['shown']
-            anim = Animation(pos_hint={'x': float(sign), 'y': 0}, d=0.18, t='out_quad')
+            anim = Animation(pos_hint={'x': float(sign), 'y': 0}, d=self._dur(), t='out_quad')
 
             def back(*a):
                 self._anim_busy = False
@@ -651,18 +660,64 @@ class SearchScreen(Screen):
         self._ghosts = []
         self.sv.opacity = 1
         self.sv.pos_hint = {'x': 1.0 * direction, 'y': 0}
-        Animation(pos_hint={'x': 0, 'y': 0}, d=0.3, t='out_cubic').start(self.sv)
+        Animation(pos_hint={'x': 0, 'y': 0}, d=self._dur(), t='out_cubic').start(self.sv)
         if ghost is not None:
             self._ghosts = [ghost]
             self.page.add_widget(ghost)
-            anim = Animation(pos_hint={'x': -1.0 * direction, 'y': 0}, d=0.3, t='out_cubic')
+            anim = Animation(pos_hint={'x': -1.0 * direction, 'y': 0}, d=self._dur(), t='out_cubic')
             anim.bind(on_complete=lambda *a: (self.page.remove_widget(ghost), self._ghosts.clear()) if ghost.parent else None)
             anim.start(ghost)
 
+    def _dur(self):
+        """Длительность анимации листания: не меньше порога из настроек."""
+        return max(0.001, self.ctl.swap_min_ms() / 1000.0)
+
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
+        self._undo_visible = visible
+        if not self._fontbar_on:
+            self._restore_slot()
+
+    def _restore_slot(self):
         self.status_slot.clear_widgets()
-        self.status_slot.add_widget(self.actions if visible else self.status_sv)
+        self.status_slot.add_widget(self.actions if self._undo_visible else self.status_sv)
+
+    # двойное быстрое касание окна статуса: вместо текста — «Размер шрифта» и кнопки − / +
+    def _make_fontbar(self):
+        h = self.status_slot.height
+        bar = BoxLayout(size_hint_y=None, height=h, spacing=dp(6))
+        self._font_lbl = mlabel(f"Размер шрифта: {self.ctl.config.get_int('font_size', 16)}", font_size=sp(14))
+        self._font_lbl.valign = 'middle'
+        self._font_lbl.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+        self._font_lbl.size_hint_y = 1
+        bar.add_widget(self._font_lbl)
+        for txt, dlt in (('−', -1), ('+', 1)):
+            bar.add_widget(btn(txt, lambda d=dlt: self._font_change(d), size_hint_x=None, width=dp(56)))
+        bar.add_widget(btn('Ок', self._fontbar_hide, size_hint_x=None, width=dp(56), color=GRAY))
+        return bar
+
+    def _font_change(self, delta):
+        self._font_lbl.text = f"Размер шрифта: {self.app.change_font_live(delta)}"
+        self._fontbar_timer()
+
+    def _fontbar_timer(self):
+        if self._fontbar_ev is not None:
+            self._fontbar_ev.cancel()
+        self._fontbar_ev = Clock.schedule_once(lambda dt: self._fontbar_hide(), 6)
+
+    def _fontbar_show(self):
+        self._fontbar_on = True
+        self.status_slot.clear_widgets()
+        self._fontbar = self._make_fontbar()
+        self.status_slot.add_widget(self._fontbar)
+        self._fontbar_timer()
+
+    def _fontbar_hide(self):
+        if self._fontbar_ev is not None:
+            self._fontbar_ev.cancel()
+            self._fontbar_ev = None
+        self._fontbar_on = False
+        self._restore_slot()
 
     def search(self):
         self.input.focus = False
@@ -1225,6 +1280,12 @@ class SettingsScreen(Screen):
         step.add_widget(btn('−', lambda: self.step(-1), size_hint_x=None, width=dp(60)))
         step.add_widget(btn('+', lambda: self.step(1), size_hint_x=None, width=dp(60)))
         self.set_box.add_widget(step)
+        sw = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        self._swap_label = mlabel(f"Листание не быстрее: {self.ctl.swap_min_ms()} мс")
+        sw.add_widget(self._swap_label)
+        sw.add_widget(btn('−', lambda: self.swap_floor(-50), size_hint_x=None, width=dp(60)))
+        sw.add_widget(btn('+', lambda: self.swap_floor(50), size_hint_x=None, width=dp(60)))
+        self.set_box.add_widget(sw)
         self.set_box.add_widget(mlabel('Индексация'))
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
@@ -1254,6 +1315,11 @@ class SettingsScreen(Screen):
         self._step_label.text = f"Шрифт отметок: +{v}"
         self.ctl.reset_views()
         self.ctl.on_status('Шаг шрифта изменён: повторите поиск или откройте «Чтение»')
+
+    def swap_floor(self, delta):
+        v = min(1000, max(0, self.ctl.swap_min_ms() + delta))
+        self.ctl.set_setting('swap_min_ms', v)
+        self._swap_label.text = f"Листание не быстрее: {v} мс"
 
     def pick_sync(self):
         def got(uri):
@@ -1809,6 +1875,13 @@ class SinevaApp(App):
         Clock.schedule_once(lambda dt: setattr(sv, 'scroll_y', 0), 0.2)          # последний блок виден снизу
 
     # ---------- размер шрифта ----------
+    def change_font_live(self, delta):
+        """Размер шрифта из окна статуса: страница на экране перерисовывается сразу, результаты не сбрасываются."""
+        size = max(10, min(40, self.ctl.config.get_int('font_size', 16) + delta))
+        self.ctl.set_setting('font_size', size)
+        self.ctl.apply_font()
+        return size
+
     def change_font(self, delta):
         size = max(10, min(40, self.ctl.config.get_int('font_size', 16) + delta))
         self.ctl.set_setting('font_size', size)
