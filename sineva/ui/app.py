@@ -886,6 +886,12 @@ class SearchScreen(Screen):
         box.add_widget(head)
         parts = []
         chunks = list(c['chunks'])
+        if peek and chunks:                                # соседней странице нужна лишь верхняя часть — первый экран
+            a0, b0 = chunks[0]
+            if b0 - a0 > 900:
+                cut = c['text'].rfind(' ', a0, a0 + 900)
+                b0 = cut if cut > a0 else a0 + 900
+            chunks = [(a0, b0)]
 
         def make(a_, b_):
             sub = dict(c, text=c['text'][a_:b_], offset=a_,
