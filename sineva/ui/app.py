@@ -403,6 +403,7 @@ class SearchScreen(Screen):
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
         self._fontbar_on = False
+        self._last_tap = None
         self._fontbar_ev = None
         self._undo_visible = False
         self._peek_gen = 0               # поколение соседних страниц при перетаскивании
@@ -505,12 +506,17 @@ class SearchScreen(Screen):
 
     # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
-        if self.status_slot.collide_point(*touch.pos) and getattr(touch, 'is_double_tap', False):
-            if self._fontbar_on:
-                self._fontbar_hide()
-            else:
-                self._fontbar_show()
-            return True
+        if self.status_slot.collide_point(*touch.pos):
+            # своя проверка двойного касания: у встроенной (is_double_tap) допуск 20 пикселей — пальцем не попасть
+            now, last = time.time(), self._last_tap
+            if last and now - last[0] < 0.5 and abs(touch.x - last[1]) < dp(70) and abs(touch.y - last[2]) < dp(70):
+                self._last_tap = None
+                if self._fontbar_on:
+                    self._fontbar_hide()
+                else:
+                    self._fontbar_show()
+                return True
+            self._last_tap = (now, touch.x, touch.y)
         if self.collide_point(*touch.pos) and not self._anim_busy:
             touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
         return super().on_touch_down(touch)
