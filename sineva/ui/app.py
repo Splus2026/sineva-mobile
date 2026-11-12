@@ -394,24 +394,6 @@ class StatusDot(Widget):
                 Ellipse(pos=self.pos, size=self.size)
 
 
-class TapHint(Widget):
-    """Значок «двойное касание»: точка и два кольца, как рябь от касания."""
-    def __init__(self, **kw):
-        super().__init__(size_hint=(None, None), size=(dp(14), dp(14)), **kw)
-        self.bind(pos=self._draw, size=self._draw)
-
-    def _draw(self, *a):
-        from kivy.graphics import Ellipse, Line
-        self.canvas.clear()
-        cx, cy = self.center_x, self.center_y
-        with self.canvas:
-            Color(0.45, 0.5, 0.62, 0.9)
-            Ellipse(pos=(cx - dp(2), cy - dp(2)), size=(dp(4), dp(4)))
-            Line(circle=(cx, cy, dp(4.5)), width=1)
-            Color(0.45, 0.5, 0.62, 0.55)
-            Line(circle=(cx, cy, dp(6.8)), width=1)
-
-
 class SearchScreen(Screen):
     def __init__(self, app, reading=False, **kw):
         super().__init__(name='read' if reading else 'search', **kw)
@@ -420,10 +402,6 @@ class SearchScreen(Screen):
         self._keys = []                  # ключи показанных карточек (для дорисовки «Показать ещё»)
         self._cards = []                 # их виджеты
         self._widgets = {}               # ключ -> виджеты-куски текста
-        self._fontbar_on = False
-        self._last_tap = None
-        self._fontbar_ev = None
-        self._undo_visible = False
         self._peek_gen = 0               # поколение соседних страниц при перетаскивании
         self._drag = None                # состояние перетаскивания {'panels': {±1: ScrollView}, 'sy': …}
         self._anim_busy = False
@@ -455,17 +433,14 @@ class SearchScreen(Screen):
         self.go.bind(on_release=lambda *_: self.search())
         top.add_widget(self.input)
         top.add_widget(self.go)
-        # окно статуса фиксированной высоты без прокрутки (поиск — 4 строки, чтение — 3): нижняя часть экрана не скачет,
-        # весь текст виден; слишком длинное обрезается многоточием. Двойное касание окна — размер шрифта.
-        lines = 3 if reading else 4
-        self.status = Label(text='Выберите ровно одну книгу на вкладке «Книги» — страницы пойдут подряд.' if reading else
-                            'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».',
-                            markup=True, color=GRAY, font_size=sp(12), halign='left', valign='top',
-                            size_hint_y=None, height=sp(12) * 1.25 * lines + dp(6), max_lines=lines,
-                            shorten=True, shorten_from='right', split_str=' ')
-        self.status.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
-        self.status_sv = self.status
-        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status.height, dp(37)))
+        # окно статуса фиксированной высоты (поиск — 3 строки, чтение — 2) с прокруткой: нижняя часть экрана не скачет
+        self.status = mlabel('Выберите ровно одну книгу на вкладке «Книги» — страницы пойдут подряд.' if reading else
+                             'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
+        self.status.color = GRAY
+        self.status_sv = ScrollView(size_hint_y=None, bar_width=dp(3), do_scroll_x=False,
+                                    height=sp(13) * 1.3 * (2 if reading else 3) + dp(10))
+        self.status_sv.add_widget(self.status)
+        self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status_sv.height, dp(37)))
         self._m = {'draw': [None, None], 'swap': [None, None]}      # [первый экран, вся страница], мс
         self._chars = None                                           # (знаков в первом куске, знаков всего)
         self._nav = None
@@ -477,10 +452,9 @@ class SearchScreen(Screen):
             root.add_widget(top)
         self.status_slot.add_widget(self.status_sv)
         self.dot = StatusDot()
-        dot_col = FloatLayout(size_hint=(None, 1), width=dp(18))
-        self.dot.pos_hint = {'top': 1, 'right': 1}
+        dot_col = BoxLayout(size_hint=(None, 1), width=dp(18), padding=(dp(2), dp(4), 0, 0))
+        self.dot.pos_hint = {'top': 1}
         dot_col.add_widget(self.dot)
-        dot_col.add_widget(TapHint(pos_hint={'y': 0, 'right': 1}))      # подсказка: двойное касание — размер шрифта
         status_row = self.status_row = BoxLayout(size_hint_y=None)
         status_row.add_widget(self.status_slot)
         status_row.add_widget(dot_col)
@@ -529,17 +503,6 @@ class SearchScreen(Screen):
 
     # листание: страница следует за пальцем, рядом виден соседний блок
     def on_touch_down(self, touch):
-        if self.status_row.collide_point(*touch.pos):
-            # своя проверка двойного касания: у встроенной (is_double_tap) допуск 20 пикселей — пальцем не попасть
-            now, last = time.time(), self._last_tap
-            if last and now - last[0] < 0.5 and abs(touch.x - last[1]) < dp(70) and abs(touch.y - last[2]) < dp(70):
-                self._last_tap = None
-                if self._fontbar_on:
-                    self._fontbar_hide()
-                else:
-                    self._fontbar_show()
-                return True
-            self._last_tap = (now, touch.x, touch.y)
         if self.collide_point(*touch.pos) and not self._anim_busy:
             touch.ud['sw0'] = (touch.x, touch.y, time.time(), self.sv.scroll_y)
         return super().on_touch_down(touch)
@@ -703,50 +666,8 @@ class SearchScreen(Screen):
 
     def set_undo(self, visible):
         """Вместо строки состояния — кнопки «Отмена», «+Шрифт», «+Цвет», «+Мысли»."""
-        self._undo_visible = visible
-        if not self._fontbar_on:
-            self._restore_slot()
-
-    def _restore_slot(self):
         self.status_slot.clear_widgets()
-        self.status_slot.add_widget(self.actions if self._undo_visible else self.status_sv)
-
-    # двойное быстрое касание окна статуса: вместо текста — «Размер шрифта» и кнопки − / +
-    def _make_fontbar(self):
-        h = self.status_slot.height
-        bar = BoxLayout(size_hint_y=None, height=h, spacing=dp(6))
-        self._font_lbl = mlabel(f"Размер шрифта: {self.ctl.config.get_int('font_size', 16)}", font_size=sp(14))
-        self._font_lbl.valign = 'middle'
-        self._font_lbl.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
-        self._font_lbl.size_hint_y = 1
-        bar.add_widget(self._font_lbl)
-        for txt, dlt in (('−', -1), ('+', 1)):
-            bar.add_widget(btn(txt, lambda d=dlt: self._font_change(d), size_hint_x=None, width=dp(56)))
-        bar.add_widget(btn('Ок', self._fontbar_hide, size_hint_x=None, width=dp(56), color=GRAY))
-        return bar
-
-    def _font_change(self, delta):
-        self._font_lbl.text = f"Размер шрифта: {self.app.change_font_live(delta)}"
-        self._fontbar_timer()
-
-    def _fontbar_timer(self):
-        if self._fontbar_ev is not None:
-            self._fontbar_ev.cancel()
-        self._fontbar_ev = Clock.schedule_once(lambda dt: self._fontbar_hide(), 6)
-
-    def _fontbar_show(self):
-        self._fontbar_on = True
-        self.status_slot.clear_widgets()
-        self._fontbar = self._make_fontbar()
-        self.status_slot.add_widget(self._fontbar)
-        self._fontbar_timer()
-
-    def _fontbar_hide(self):
-        if self._fontbar_ev is not None:
-            self._fontbar_ev.cancel()
-            self._fontbar_ev = None
-        self._fontbar_on = False
-        self._restore_slot()
+        self.status_slot.add_widget(self.actions if visible else self.status_sv)
 
     def search(self):
         self.input.focus = False
@@ -776,6 +697,7 @@ class SearchScreen(Screen):
             if w:
                 text += f", своп {w} мс"
         self.status.text = escape_markup(text)
+        self.status_sv.scroll_y = 1
 
     def show_cards(self, cards, total, nav):
         """Показывается один блок. Сначала текст первого экрана (жёлтый индикатор), остальные куски блока
@@ -892,7 +814,17 @@ class SearchScreen(Screen):
     def _card(self, c, tok=None, on_done=None, peek=False):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
-        head = mlabel(c['header'], font_size=sp(14))
+        left = mlabel(c['header'], font_size=sp(14))
+        fs = self.ctl.config.get_int('font_size', 16)
+        right = Label(text=f"Шрифт: {fs}  [ref=up][size=26sp][b]  +  [/b][/size][/ref][ref=down][size=26sp][b]  −  [/b][/size][/ref]",
+                      markup=True, color=GRAY, font_size=sp(12), halign='right', valign='middle',
+                      size_hint=(None, 1), width=dp(168))
+        right.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+        right.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
+        head = BoxLayout(size_hint_y=None, height=max(left.height, dp(34)))
+        left.bind(height=lambda w, h: setattr(head, 'height', max(h, dp(34))))
+        head.add_widget(left)
+        head.add_widget(right)
         key = c['key']
         box.add_widget(head)
         parts = []

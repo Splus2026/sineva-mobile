@@ -149,7 +149,7 @@ ss._drag_begin(); ss._drag_move(-150); ss._drag_move(80); ss._drag_end(-20, 0.5)
 ss._anim_busy = False; ss._drag_begin(); ss._drag_move(-300); ss._drag_end(-300, 0.5); ss._drop_cover()
 ss._anim_busy = False
 assert c2.peek(-1) is None or c2.peek(-1)['key']
-ss._fontbar_show(); ss._font_change(1); ss._font_change(-1); ss._fontbar_hide()
+app2.change_font_live(1); app2.change_font_live(-1)
 app2.settings_s.toggle_settings(); app2.settings_s.swap_floor(50); app2.settings_s.swap_floor(-5000); app2.settings_s.toggle_settings()
 assert c2.swap_min_ms() == 0
 app2.on_anchor(key, 0, 4, None)
