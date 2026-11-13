@@ -548,6 +548,7 @@ class Controller:
                      f"[ref=words][b][color={COLOR_LINK}]Слова[/color][/b][/ref]")
         return {'key': key, 'book': item['book'], 'header': header,
                 'h_kind': h_kind, 'h_title': h_title, 'h_sub': h_sub,
+                'h_level': item.get('meta', {}).get('max_level', 0),
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': spans, 'segments': segments,
                 'big': layers['big'], 'color': layers['color'], 'notes': layers['notes'],
                 'expanded': expanded, 'chunks': self.chunks(text), 'source': self._source_label(item['book'])}

@@ -1092,11 +1092,19 @@ class SearchScreen(Screen):
         if not read:
             L1.bind(width=set_title)
         set_title()
-        L2 = lab(c.get('h_sub', ''), sub_fs, GRAY, not read)
+        gap = '[size=60sp]     [/size]'                                  # ≈ две ширины значка «+»
+        plus_w = sp(31) * 2                                             # та же двойная ширина в пикселях
+        if read:
+            L2 = lab(c.get('h_sub', ''), sub_fs, GRAY, False)
+        else:                                                           # «ур. N», отступ, «Слова» — шрифтом как «Шрифт»
+            L2 = lab(f"[size={int(max(11, round(fs * 0.75)))}sp][color=777777]ур. {c.get('h_level', 0)}[/color][/size]{gap}"
+                     f"[ref=words][b][color={link}]Слова[/color][/b][/ref]", sp(fs), GRAY, True)
+            L2.halign = 'right'
+            L2.bind(width=lambda w, v: setattr(w, 'text_size', (max(dp(10), v - plus_w), None)))
         L2.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
         R1 = lab(f"[b]Шрифт: {fs}[/b]", sp(fs), ACCENT, False)
-        R2 = lab(f"[ref=up][size=35sp][b][color={link}]+[/color][/b][/size][/ref]   "
-                 f"[ref=down][size=35sp][b][color={link}]−[/color][/b][/size][/ref]", sp(fs), ACCENT, False)
+        R2 = lab(f"[ref=up][size=52sp][b][color={link}]+[/color][/b][/size][/ref][size=60sp]     [/size]"
+                 f"[ref=down][size=52sp][b][color={link}]−[/color][/b][/size][/ref]", sp(fs), ACCENT, False)
         R2.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
 
         row1 = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))

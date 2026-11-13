@@ -35,7 +35,7 @@ class Splash(Widget):
                 k = self.smoke.p[i][0] / max(1, self.smoke.cols)
                 col = Color(0.55 - 0.2 * k, 0.75 + 0.15 * k, 1.0, 0)
                 self.dots.append((col, Rectangle(pos=(0, 0), size=(0, 0))))
-        self.wait = Label(text='Загрузка', font_size=sp(18), color=(0.67, 0.8, 1, 1), size_hint=(None, None))
+        self.wait = Label(text='', opacity=0, font_size=sp(18), color=(0.67, 0.8, 1, 1), size_hint=(None, None))
         self.add_widget(self.wait)
         self.bind(pos=self._layout, size=self._layout)
         self._layout()
@@ -56,8 +56,7 @@ class Splash(Widget):
     def _tick(self, dt):
         self.t += min(dt, 0.1)
         t = self.t
-        self.wait.text = 'Загрузка' + '.' * (1 + int(t / 0.45) % 3)      # точки добавляются: . .. ...
-        self.wait.opacity = 1.0 if t < 0.3 else 0.0              # анимация заставки началась — надпись не нужна
+        # надпись «Загрузка…» есть на presplash.png; здесь второй не нужно
         self.logo_color.a = min(1.0, max(0.0, (t - 0.3) / 1.6))      # круг проявляется вместе со словом
         size0 = self.cell / self.smoke.sub
         for i, (col, rect) in enumerate(self.dots):
