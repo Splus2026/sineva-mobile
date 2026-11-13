@@ -99,7 +99,7 @@ assert c.folder_sizes()['books'] >= 0
 assert c.outcome.results == [] and c.reading is None      # смена вида/темы сбросила вкладки
 c.submit_query('вера')
 # выделение: долгое нажатие на слово и подчёркивание
-from sineva.ui.app import SelectableText
+from sineva.ui.widgets import SelectableText
 cd = c.outcome and [x for x in c._publish.__self__.search.visible(c.outcome)]
 cards = []
 c.on_cards = lambda cs, t, m: cards.extend(cs)
@@ -198,3 +198,11 @@ assert app2._on_key(None, 27) is True
 app2._sync_close()
 assert app2._sync_pop is None
 print('sync dialog OK')
+
+# тема: переключение обновляет цвета во всех модулях интерфейса
+from sineva.ui import theme as _th, widgets as _w, search_screen as _ss
+_th.apply_theme('night')
+assert _w.ACCENT == _ss.ACCENT == _th.THEMES['night']['ACCENT']
+_th.apply_theme('day')
+assert _w.ACCENT == _ss.ACCENT == _th.THEMES['day']['ACCENT']
+print('theme OK')
