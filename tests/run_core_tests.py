@@ -417,6 +417,14 @@ try:
     _t2 = _rt(dx).split('\n')
     check('docx: строка добавлена первым абзацем', _t1[0] == 'mconfig="Док.docx = Док, N1000"' and _t1[1] == '1 Первый абзац' and len(_t1) == 3, str(_t1))
     check('docx: повторная запись заменяет', _t2[0] == 'mconfig="Док.docx = Док два, N500"' and len(_t2) == 3 and _mc.read(dx)[0] == ('Док два', 'N500'), str(_t2))
+    zp = ctl.export_books(['Изида_1.txt', 'Простая.txt', 'нет_такой.txt'])
+    import zipfile as _z2
+    with _z2.ZipFile(zp) as _z:
+        _names = sorted(_z.namelist())
+        _first_line = _z.read('Изида_1.txt').decode('utf-8').split('\n')[0]
+    check('экспорт книг: ZIP с выбранными', _names == ['Изида_1.txt', 'Простая.txt'], str(_names))
+    check('в экспорте сохранена строка mconfig', _first_line.startswith('mconfig='), _first_line)
+    check('экспорт без выбора — сообщение', ctl.export_books([]) is None and 'не выбраны' in got['status'])
 
     # обновление списков (кнопка ↻)
     with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:

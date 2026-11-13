@@ -2,6 +2,7 @@
 import os
 import shutil
 import time
+import zipfile
 from typing import Optional
 from . import marks as marks_mod, notes
 from . import mconfig
@@ -74,6 +75,23 @@ class ExportMixin:
             self.on_status(f"Не удалось сохранить: {e}")
             return None
         self.on_status(f"Сохранено: {os.path.basename(path)}")
+        return path
+
+    def export_books(self, file_names) -> Optional[str]:
+        """Один ZIP «Книги_…zip» с выбранными книгами (файлы как есть — вместе с первой строкой mconfig)."""
+        books = [b for b in (self.library.find(n) for n in file_names) if b and os.path.exists(b.path)]
+        if not books:
+            self.on_status("Книги для экспорта не выбраны")
+            return None
+        path = self._export_name('Книги', 'zip')
+        try:
+            with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+                for b in books:
+                    z.write(b.path, b.file_name)
+        except Exception as e:
+            self.on_status(f"Не удалось сохранить: {e}")
+            return None
+        self.on_status(f"Сохранено: {os.path.basename(path)} (книг: {len(books)})")
         return path
 
     def _export_name(self, label: str, ext: str) -> str:

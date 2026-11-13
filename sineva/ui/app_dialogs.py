@@ -4,6 +4,7 @@ from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
@@ -315,13 +316,17 @@ class DialogsMixin:
                     self.ctl.on_status(f"Сохранено: {path}")
 
         box.add_widget(mlabel('Что экспортировать:', color=(1, 1, 1, 1)))
-        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(5 * 46), spacing=dp(6))
+        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(6 * 46), spacing=dp(6))
         for label, fn in (('Подчёркнутое (TXT)', lambda: self.ctl.export_marks('txt')),
                           ('Подчёркнутое (Word, DOCX)', lambda: self.ctl.export_marks('docx')),
                           ('Конспект', self.ctl.export_conspect),
                           ('Дневник', self.ctl.export_diary),
-                          ('Мои мысли', self.ctl.export_notes)):
-            grid.add_widget(btn(label, lambda fn=fn: do(fn)))
+                          ('Мои мысли', self.ctl.export_notes),
+                          ('Книги', None)):
+            if fn is None:                                     # книги выбираются птичками в отдельном списке
+                grid.add_widget(btn(label, lambda: self._pick_books(lambda names: do(lambda: self.ctl.export_books(names)))))
+            else:
+                grid.add_widget(btn(label, lambda fn=fn: do(fn)))
         box.add_widget(grid)
         box.add_widget(mlabel('Экспортированные файлы (последние сверху). Значок справа — отправить '
                               'в мессенджер, почту и т. д.:', font_size=sp(13), color=(1, 1, 1, 1)))
@@ -330,6 +335,57 @@ class DialogsMixin:
         box.add_widget(sv)
         box.add_widget(btn('Закрыть', pop.dismiss, color=GRAY))
         fill()
+        pop.open()
+
+    def _pick_books(self, on_pick):
+        """Список добавленных книг с птичками (и «Выбрать все»); «Экспортировать» отдаёт отмеченные file_name."""
+        rows = self.ctl.library.books
+        if not rows:
+            self.ctl.on_status("Книг пока нет")
+            return
+        sel, guard, cbs = set(), {'on': False}, []
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        box.add_widget(mlabel('Отметьте книги для экспорта (один ZIP-файл):', color=(1, 1, 1, 1), font_size=sp(14)))
+        listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+        listing.bind(minimum_height=listing.setter('height'))
+
+        def line(text, cb):
+            ln = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+            lb = Label(text=text, markup=True, halign='left', valign='middle', color=(1, 1, 1, 1), font_size=sp(15))
+            lb.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+            ln.add_widget(cb)
+            ln.add_widget(lb)
+            listing.add_widget(ln)
+        all_cb = CheckBox(size_hint_x=None, width=dp(44))
+        line('[b]Выбрать все[/b]', all_cb)
+
+        def all_toggled(w, v):
+            if not guard['on']:
+                guard['on'] = True
+                for c_ in cbs:
+                    c_.active = v
+                guard['on'] = False
+        all_cb.bind(active=all_toggled)
+        for b in rows:
+            cb = CheckBox(size_hint_x=None, width=dp(44))
+            cbs.append(cb)
+
+            def toggled(w, v, name=b.file_name):
+                (sel.add if v else sel.discard)(name)
+                if not guard['on']:
+                    guard['on'] = True
+                    all_cb.active = len(sel) == len(rows)
+                    guard['on'] = False
+            cb.bind(active=toggled)
+            line(f"{escape_markup(b.display)}  [size={int(sp(12))}][color=aaaaaa]{escape_markup(b.file_name)}[/color][/size]", cb)
+        sv = ScrollView()
+        sv.add_widget(listing)
+        box.add_widget(sv)
+        pop = tall_popup('Книги', box)
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        row.add_widget(btn('Экспортировать', lambda: (pop.dismiss(), on_pick([b.file_name for b in rows if b.file_name in sel]))))
+        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        box.add_widget(row)
         pop.open()
 
     def open_diary(self):
