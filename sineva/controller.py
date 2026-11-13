@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional
 from . import marks as marks_mod
 from .config import AppConfig
 from .highlight import build_brief_view_mapped, get_intervals
+from . import mconfig
 from .library import Book, Library
 from .paths import AppPaths
 from .search import COLOR_LINK, SearchOutcome, SearchService
@@ -202,12 +203,22 @@ class Controller(MarksMixin, ExportMixin, ReadingMixin, SyncMixin):
                 b = self.library.add_book_file(p)
                 if b:
                     added.append(b.file_name)
+                    self._apply_mconfig(b)
                 else:
                     self.on_status(f"Формат не поддерживается (нужны .txt или .docx): {os.path.basename(p)}")
             except Exception as e:
                 self.on_status(f"Не удалось добавить {p}: {e}")
         self.publish_books()
         return added
+
+    def _apply_mconfig(self, book) -> None:
+        """Первая строка книги mconfig="файл = Название, разделитель": настройки книги берутся из неё."""
+        found, note = mconfig.read(book.path)
+        if found:
+            self.library.update_book_settings(book, found[0], found[1])
+            self.on_status(f"Из первой строки книги применены настройки: «{found[0]}», {found[1]}")
+        elif note:
+            self.on_status(f"{book.file_name}: {note}")
 
     def remove_book(self, file_name: str, delete_file: bool = False) -> None:
         b = self.library.find(file_name)

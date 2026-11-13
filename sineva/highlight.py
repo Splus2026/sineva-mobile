@@ -108,10 +108,3 @@ def build_brief_view_mapped(content, exact_words, partial_fragments):
 
     return "".join(brief_parts), brief_intervals, segments
 
-
-def build_brief_view(content, exact_words, partial_fragments):
-    """Краткая версия текста топика — (текст, интервалы подсветки). Карту кусков
-       для перевода выделения на экране в исходный текст даёт
-       build_brief_view_mapped (это та же функция, здесь карта отбрасывается)."""
-    text, intervals, _segments = build_brief_view_mapped(content, exact_words, partial_fragments)
-    return text, intervals

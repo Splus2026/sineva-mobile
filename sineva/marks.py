@@ -324,26 +324,6 @@ class MarksStore:
                 conn.execute(f"DELETE FROM marks WHERE id IN ({marks_sql})", chunk)
             conn.commit()
 
-    def replace_file_marks(self, file_name, snapshot):
-        """Возвращает отметки файла к сохранённому состоянию (отмена последнего выделения)."""
-        with self._lock:
-            conn = self._connect()
-            key = file_key(file_name)
-            old = {mark_uid(key, f, b, a) for f, b, a in conn.execute(
-                "SELECT fragment, before, after FROM marks WHERE file_key = ?", (key,)).fetchall()}
-            keep = {mark_uid(m.file_key, m.fragment, m.before, m.after) for m in snapshot}
-            for uid in old - keep:
-                conn.execute("INSERT OR REPLACE INTO tombstones (uid, at) VALUES (?, ?)", (uid, _now()))
-            for uid in keep:
-                conn.execute("DELETE FROM tombstones WHERE uid = ?", (uid,))
-            conn.execute("DELETE FROM marks WHERE file_key = ?", (key,))
-            for m in snapshot:
-                conn.execute("INSERT INTO marks (file_key, file_label, fragment, before, after, created) "
-                             "VALUES (?, ?, ?, ?, ?, ?)",
-                             (m.file_key, m.file_label, m.fragment, m.before, m.after, m.created))
-            conn.commit()
-            self._cache.pop(key, None)
-
     def all_marks(self):
         with self._lock:
             rows = self._connect().execute(

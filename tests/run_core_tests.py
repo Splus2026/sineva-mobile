@@ -376,6 +376,23 @@ try:
     bad = os.path.join(tmp, 'x.pdf'); open(bad, 'wb').write(b'%PDF')
     ctl.add_books([bad])
     check('неподдерживаемый формат: сообщение', 'не поддерживается' in got['status'])
+    # первая строка книги: mconfig="файл = Название, разделитель"
+    from sineva import mconfig as _mc
+    check('mconfig: разбор', _mc.parse('mconfig=" isida_1.docx = Разоблаченная Изида, N2000"') == ('isida_1.docx', 'Разоблаченная Изида', 'N2000'))
+    check('mconfig: типографские кавычки и запятая в названии',
+          _mc.parse('mconfig=\u201cb.txt = Книга, часть 1, NS300\u201d') == ('b.txt', 'Книга, часть 1', 'NS300'))
+    check('mconfig: мусор не разбирается', _mc.parse('1 Обычная строка') is None and _mc.parse('mconfig="a.txt = без разделителя"') is None)
+    good = os.path.join(tmp, 'Изида_1.txt')
+    open(good, 'w', encoding='utf-8').write('mconfig=" изида_1.TXT = Разоблаченная Изида, N2000"\n1 Текст книги.\n')
+    ctl.add_books([good])
+    b1 = ctl.library.find('Изида_1.txt')
+    check('mconfig из книги применён', b1.display == 'Разоблаченная Изида' and b1.separator == 'N2000', f"{b1.display}/{b1.separator}")
+    check('mconfig: сообщение о применении', 'применены настройки' in got['status'], got['status'])
+    wrong = os.path.join(tmp, 'Другая.txt')
+    open(wrong, 'w', encoding='utf-8').write('mconfig="чужая.txt = Не та, N500"\n1 Текст.\n')
+    ctl.add_books([wrong])
+    b2 = ctl.library.find('Другая.txt')
+    check('mconfig с чужим именем файла пропущен', b2.display == 'Другая' and 'не совпадает' in got['status'], f"{b2.display}|{got['status']}")
 
     # обновление списков (кнопка ↻)
     with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:
