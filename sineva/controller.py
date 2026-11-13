@@ -537,7 +537,7 @@ class Controller:
         text, hl, segments, paging = self._view(key, item, brief)
         layers = self._layers(item, segments)
         spans = layers['marks']
-        header = (f"[b]Страница {item['ordinal']}[/b] [size=12sp][color=777777]из {self.reading['total']}[/color][/size]") if self.reading and 'ordinal' in item \
+        header = (f"[ref=page][b][color={COLOR_LINK}]Страница {item['ordinal']}[/color][/b][/ref] [size=12sp][color=777777]из {self.reading['total']}[/color][/size]") if self.reading and 'ordinal' in item \
             else self.search.header_markup(item, i + 1)
         return {'key': key, 'book': item['book'], 'header': header,
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': spans, 'segments': segments,

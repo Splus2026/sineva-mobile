@@ -461,7 +461,7 @@ try:
     check('прошлое место помнится: предложено продолжить', asked.get('n', 0) >= 1 and asked['hist'][-1][2], str(asked))
     check('диалог знает число страниц', asked['total'] >= 1, str(asked['total']))
     asked['goto'](1)
-    check('«Страница 1» — первая страница', 'Страница 1[/b]' in rg2['cards'][0]['header'], rg2['cards'][0]['header'])
+    check('«Страница 1» — первая страница', 'Страница 1' in rg2['cards'][0]['header'], rg2['cards'][0]['header'])
     rc2.set_tab('search'); rc2.reading = None; rc2._states.pop('read', None); rc2.set_tab('read')
     asked['cont'](asked['hist'][-1][0])
     check('«Продолжить» — с последнего места', 'Страница' in rg2['cards'][0]['header'] and rg2['cards'][0]['header'] != '')

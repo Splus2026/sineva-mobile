@@ -1036,6 +1036,8 @@ class SearchScreen(Screen):
         fs = self.ctl.config.get_int('font_size', 16)
         left = mlabel(c['header'], font_size=sp(fs), color=ACCENT)        # тот же шрифт, что и справа
         left.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
+        left.size_hint_y, left.valign = 1, 'middle'                      # по высоте — как правая часть
+        left.bind(width=lambda w, v: setattr(w, 'text_size', (max(dp(10), v - dp(14)), None)))   # зазор справа: тексты не слипаются
         right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b][color={COLOR_LINK}] + [/color][/b][/size][/ref]"
                            f"[ref=down][size=35sp][b][color={COLOR_LINK}] − [/color][/b][/size][/ref]",
                       markup=True, color=ACCENT, font_size=sp(fs), halign='right', valign='middle',
@@ -1045,8 +1047,8 @@ class SearchScreen(Screen):
         head = BoxLayout(size_hint_y=None, height=dp(48))
 
         def fit(*_):
-            head.height = max(left.height, right.texture_size[1] + dp(10), dp(48))
-        left.bind(height=fit)
+            head.height = max(left.texture_size[1] + dp(14), right.texture_size[1] + dp(10), dp(48))
+        left.bind(texture_size=fit)
         right.bind(texture_size=fit)
         head.add_widget(left)
         head.add_widget(right)
