@@ -44,7 +44,7 @@ class Animation:
 mod('kivy'); mod('kivy.animation', Animation=Animation); mod('kivy.app', App=App); mod('kivy.clock', Clock=Clock)
 mod('kivy.core'); mod('kivy.core.window', Window=types.SimpleNamespace(height=800, width=400, bind=lambda **k: None, clearcolor=None, remove_widget=lambda w: None, add_widget=lambda w: None))
 mod('kivy.metrics', dp=lambda x: x if isinstance(x, (int, float)) else 10, sp=lambda x: x)
-for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('slider', 'Slider'), ('floatlayout', 'FloatLayout'), ('label', 'Label'),
+for n, c in [('boxlayout', 'BoxLayout'), ('button', 'Button'), ('checkbox', 'CheckBox'), ('slider', 'Slider'), ('anchorlayout', 'AnchorLayout'), ('floatlayout', 'FloatLayout'), ('label', 'Label'),
              ('popup', 'Popup'), ('progressbar', 'ProgressBar'), ('scrollview', 'ScrollView'),
              ('spinner', 'Spinner'), ('switch', 'Switch'), ('textinput', 'TextInput')]:
     mod('kivy.uix.' + n, **{c: W})

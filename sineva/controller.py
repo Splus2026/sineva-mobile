@@ -539,7 +539,15 @@ class Controller:
         spans = layers['marks']
         header = (f"[ref=page][b][color={COLOR_LINK}]Страница {item['ordinal']}[/color][/b][/ref] [size=12sp][color=777777]из {self.reading['total']}[/color][/size]") if self.reading and 'ordinal' in item \
             else self.search.header_markup(item, i + 1)
+        if self.reading and 'ordinal' in item:
+            h_kind, h_title = 'read', f"Страница {item['ordinal']}"
+            h_sub = f"[color=777777]из {self.reading['total']}[/color]"
+        else:
+            h_kind, h_title = 'search', f"{i + 1}. {item.get('book_display', '')}"
+            h_sub = (f"[color=777777]ур. {item['meta']['max_level']} · [/color]"
+                     f"[ref=words][b][color={COLOR_LINK}]Слова[/color][/b][/ref]")
         return {'key': key, 'book': item['book'], 'header': header,
+                'h_kind': h_kind, 'h_title': h_title, 'h_sub': h_sub,
                 'text': text, 'hl': [tuple(x) for x in hl], 'marks': spans, 'segments': segments,
                 'big': layers['big'], 'color': layers['color'], 'notes': layers['notes'],
                 'expanded': expanded, 'chunks': self.chunks(text), 'source': self._source_label(item['book'])}

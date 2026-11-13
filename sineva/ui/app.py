@@ -10,6 +10,7 @@ from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 from kivy.graphics import Color, PopMatrix, PushMatrix, Rectangle, Translate
 from kivy.metrics import dp, sp
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
@@ -790,12 +791,34 @@ class SearchScreen(Screen):
         box.add_widget(mlabel('Отметьте слова — останутся страницы только с ними', color=(1, 1, 1, 1), font_size=sp(14)))
         listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
         listing.bind(minimum_height=listing.setter('height'))
+        cbs, guard = [], {'on': False}
+        all_line = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
+        all_cb = CheckBox(size_hint_x=None, width=dp(44), active=bool(rows) and len(sel) == len(rows))
+        all_line.add_widget(all_cb)
+        all_line.add_widget(Label(text='[b]Выбрать все[/b]', markup=True, halign='left', valign='middle',
+                                  color=(1, 1, 1, 1), font_size=sp(16)))
+        all_line.children[0].bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+        listing.add_widget(all_line)
+
+        def all_toggled(w, v):
+            if guard['on']:
+                return
+            guard['on'] = True
+            for cb_ in cbs:
+                cb_.active = v
+            guard['on'] = False
+        all_cb.bind(active=all_toggled)
         for r in rows:
             line = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
             cb = CheckBox(size_hint_x=None, width=dp(44), active=r['word'] in sel)
+            cbs.append(cb)
 
             def toggled(w, v, word=r['word']):
                 (sel.add if v else sel.discard)(word)
+                if not guard['on']:
+                    guard['on'] = True
+                    all_cb.active = len(sel) == len(rows)
+                    guard['on'] = False
             cb.bind(active=toggled)
             lb = Label(text=f"{escape_markup(r['word'])} ({r['count']})", markup=True, halign='left', valign='middle',
                        color=(1, 1, 1, 1), font_size=sp(16))
@@ -1030,28 +1053,89 @@ class SearchScreen(Screen):
             self._active.clear_selection()
         self._active = widget
 
+    def _build_head(self, c, fs):
+        """Шапка из двух строк и двух колонок. Верх обеих колонок на одном уровне; вторые строки (мелкий шрифт слева,
+           + − справа) центрируются по вертикали на одной линии, по горизонтали — под своими первыми строками."""
+        read = c.get('h_kind') == 'read'
+        sub_fs = sp(max(11, round(fs * 0.75)))
+        link = COLOR_LINK
+
+        def cell(anchor_y, width=None):
+            ac = AnchorLayout(anchor_x='center', anchor_y=anchor_y, size_hint_x=1 if width is None else None)
+            if width is not None:
+                ac.width = width
+            return ac
+
+        def lab(text, size, color, fill):
+            lb = Label(text=text, markup=True, font_size=size, color=color, halign='center', valign='middle',
+                       size_hint=(1 if fill else None, None))
+            lb.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1]))
+            if fill:
+                lb.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+            else:
+                lb.bind(texture_size=lambda w, ts: setattr(w, 'width', ts[0]))
+            return lb
+
+        title_txt = c.get('h_title', '')
+        L1 = lab('', sp(fs), ACCENT, not read)
+        ref_title = lambda t: f"[ref=page][b][color={link}]{escape_markup(t)}[/color][/b][/ref]"
+
+        def set_title(*_):
+            t = title_txt
+            if not read:                                      # длинное название: не более 3 строк, конец заменяется «…»
+                per_line = max(4, int(max(0, L1.width - dp(14)) / (0.62 * sp(fs))))
+                limit = 3 * per_line - 6
+                if len(t) > limit:
+                    t = t[:max(1, limit)].rstrip() + '…'
+            L1.text = ref_title(t)
+        L1.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
+        if not read:
+            L1.bind(width=set_title)
+        set_title()
+        L2 = lab(c.get('h_sub', ''), sub_fs, GRAY, not read)
+        L2.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
+        R1 = lab(f"[b]Шрифт: {fs}[/b]", sp(fs), ACCENT, False)
+        R2 = lab(f"[ref=up][size=35sp][b][color={link}]+[/color][/b][/size][/ref]   "
+                 f"[ref=down][size=35sp][b][color={link}]−[/color][/b][/size][/ref]", sp(fs), ACCENT, False)
+        R2.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
+
+        row1 = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
+        row2 = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
+        c1, c2 = cell('top', None if not read else dp(40)), cell('center', None if not read else dp(40))
+        d1, d2 = cell('top', dp(40)), cell('center', dp(40))
+        c1.add_widget(L1)
+        c2.add_widget(L2)
+        d1.add_widget(R1)
+        d2.add_widget(R2)
+        for ac, w1, w2 in ((c1, L1, L2), (c2, L1, L2)):
+            if read:
+                w1.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(v, L2.width) + dp(6)))
+                w2.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(L1.width, v) + dp(6)))
+        for ac in (d1, d2):
+            R1.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(v, R2.width) + dp(10)))
+            R2.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(R1.width, v) + dp(10)))
+        for r, a_, b_ in ((row1, c1, d1), (row2, c2, d2)):
+            r.add_widget(a_)
+            if read:
+                r.add_widget(Widget())                       # распорка: правая колонка прижата к правому краю
+            r.add_widget(b_)
+
+        def fit(*_):
+            row1.height = max(L1.height, R1.height, dp(24))
+            row2.height = max(L2.height, R2.height, dp(24))
+            head.height = row1.height + row2.height + dp(6)
+        head = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(60), spacing=dp(2))
+        head.add_widget(row1)
+        head.add_widget(row2)
+        for w in (L1, L2, R1, R2):
+            w.bind(height=fit)
+        return head
+
     def _card(self, c, tok=None, on_done=None, peek=False):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
         fs = self.ctl.config.get_int('font_size', 16)
-        left = mlabel(c['header'], font_size=sp(fs), color=ACCENT)        # тот же шрифт, что и справа
-        left.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
-        left.size_hint_y, left.valign = 1, 'middle'                      # по высоте — как правая часть
-        left.bind(width=lambda w, v: setattr(w, 'text_size', (max(dp(10), v - dp(14)), None)))   # зазор справа: тексты не слипаются
-        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b][color={COLOR_LINK}] + [/color][/b][/size][/ref]"
-                           f"[ref=down][size=35sp][b][color={COLOR_LINK}] − [/color][/b][/size][/ref]",
-                      markup=True, color=ACCENT, font_size=sp(fs), halign='right', valign='middle',
-                      size_hint=(None, 1), width=dp(150 + max(0, fs - 16) * 6))
-        right.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))      # высота текста своя: иначе высота строки растёт бесконечно
-        right.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
-        head = BoxLayout(size_hint_y=None, height=dp(48))
-
-        def fit(*_):
-            head.height = max(left.texture_size[1] + dp(14), right.texture_size[1] + dp(10), dp(48))
-        left.bind(texture_size=fit)
-        right.bind(texture_size=fit)
-        head.add_widget(left)
-        head.add_widget(right)
+        head = self._build_head(c, fs)
         key = c['key']
         box.add_widget(head)
         parts = []
