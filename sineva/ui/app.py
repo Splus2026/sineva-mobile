@@ -398,6 +398,17 @@ class StatusDot(Widget):
                 Ellipse(pos=self.pos, size=self.size)
 
 
+class TapCell(AnchorLayout):
+    """Ячейка шапки: нажатие в любом месте ячейки (а не только по буквам) вызывает on_tap — крупная цель для пальца."""
+    on_tap = None
+
+    def on_touch_down(self, touch):
+        if self.on_tap is not None and self.collide_point(*touch.pos):
+            self.on_tap()
+            return True
+        return super().on_touch_down(touch)
+
+
 class Track(FloatLayout):
     """Лента страниц: сдвигается матрицей отрисовки (Translate) без пересчёта раскладки — листание идёт на частоте кадров."""
     tx = NumericProperty(0)
@@ -1054,19 +1065,13 @@ class SearchScreen(Screen):
         self._active = widget
 
     def _build_head(self, c, fs):
-        """Шапка из двух строк и двух колонок. Верх обеих колонок на одном уровне; вторые строки (мелкий шрифт слева,
-           + − справа) центрируются по вертикали на одной линии, по горизонтали — под своими первыми строками."""
+        """Шапка: две строки. Строка 1 — название (слева), «Слова» (посередине, только в поиске), «Шрифт: N» (справа).
+           Строка 2 — мелкое («ур. N» / «из N») под названием и «+» «−» под левой и правой половинами «Шрифт: N»."""
         read = c.get('h_kind') == 'read'
-        sub_fs = sp(max(11, round(fs * 0.75)))
         link = COLOR_LINK
+        sub_fs = sp(max(11, round(fs * 0.75)))
 
-        def cell(anchor_y, width=None):
-            ac = AnchorLayout(anchor_x='center', anchor_y=anchor_y, size_hint_x=1 if width is None else None)
-            if width is not None:
-                ac.width = width
-            return ac
-
-        def lab(text, size, color, fill):
+        def lab(text, size, color, fill=False):
             lb = Label(text=text, markup=True, font_size=size, color=color, halign='center', valign='middle',
                        size_hint=(1 if fill else None, None))
             lb.bind(texture_size=lambda w, ts: setattr(w, 'height', ts[1]))
@@ -1076,66 +1081,92 @@ class SearchScreen(Screen):
                 lb.bind(texture_size=lambda w, ts: setattr(w, 'width', ts[0]))
             return lb
 
+        def cell(anchor_y='center', width=None):
+            ac = TapCell(anchor_x='center', anchor_y=anchor_y, size_hint_x=1 if width is None else None)
+            if width is not None:
+                ac.width = width
+            return ac
+
+        # --- первая строка
         title_txt = c.get('h_title', '')
-        L1 = lab('', sp(fs), ACCENT, not read)
-        ref_title = lambda t: f"[ref=page][b][color={link}]{escape_markup(t)}[/color][/b][/ref]"
+        T = lab('', sp(fs), ACCENT, not read)
+        T.bind(on_ref_press=lambda w, ref: self._head_ref('page'))
 
         def set_title(*_):
             t = title_txt
             if not read:                                      # длинное название: не более 3 строк, конец заменяется «…»
-                per_line = max(4, int(max(0, L1.width - dp(14)) / (0.62 * sp(fs))))
+                per_line = max(4, int(max(0, T.width - dp(14)) / (0.62 * sp(fs))))
                 limit = 3 * per_line - 6
                 if len(t) > limit:
                     t = t[:max(1, limit)].rstrip() + '…'
-            L1.text = ref_title(t)
-        L1.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
+            T.text = f"[ref=page][b][color={link}]{escape_markup(t)}[/color][/b][/ref]"
         if not read:
-            L1.bind(width=set_title)
+            T.bind(width=set_title)
         set_title()
-        gap = '[size=60sp]     [/size]'                                  # ≈ две ширины значка «+»
-        plus_w = sp(31) * 2                                             # та же двойная ширина в пикселях
-        if read:
-            L2 = lab(c.get('h_sub', ''), sub_fs, GRAY, False)
-        else:                                                           # «ур. N», отступ, «Слова» — шрифтом как «Шрифт»
-            L2 = lab(f"[size={int(max(11, round(fs * 0.75)))}sp][color=777777]ур. {c.get('h_level', 0)}[/color][/size]{gap}"
-                     f"[ref=words][b][color={link}]Слова[/color][/b][/ref]", sp(fs), GRAY, True)
-            L2.halign = 'right'
-            L2.bind(width=lambda w, v: setattr(w, 'text_size', (max(dp(10), v - plus_w), None)))
-        L2.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
-        R1 = lab(f"[b]Шрифт: {fs}[/b]", sp(fs), ACCENT, False)
-        R2 = lab(f"[ref=up][size=52sp][b][color={link}]+[/color][/b][/size][/ref][size=60sp]     [/size]"
-                 f"[ref=down][size=52sp][b][color={link}]−[/color][/b][/size][/ref]", sp(fs), ACCENT, False)
-        R2.bind(on_ref_press=lambda w, ref: self.app.change_font_live(1 if ref == 'up' else -1))
+        F = lab(f"[b]Шрифт: {fs}[/b]", sp(fs), ACCENT)
+        W = None if read else lab(f"[b][color={link}]Слова[/color][/b]", sp(fs), ACCENT)
+        # --- вторая строка
+        S = lab(c.get('h_sub', '') if read else f"[color=777777]ур. {c.get('h_level', 0)}[/color]", sub_fs, GRAY, not read)
+        P = lab(f"[b][color={link}]+[/color][/b]", sp(52), ACCENT)
+        M = lab(f"[b][color={link}]−[/color][/b]", sp(52), ACCENT)
 
-        row1 = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
-        row2 = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
-        c1, c2 = cell('top', None if not read else dp(40)), cell('center', None if not read else dp(40))
-        d1, d2 = cell('top', dp(40)), cell('center', dp(40))
-        c1.add_widget(L1)
-        c2.add_widget(L2)
-        d1.add_widget(R1)
-        d2.add_widget(R2)
-        for ac, w1, w2 in ((c1, L1, L2), (c2, L1, L2)):
+        cT, cS = cell('top', None if not read else dp(40)), cell('center', None if not read else dp(40))
+        cF = cell('top', dp(40))
+        half_p, half_m = cell('center', dp(20)), cell('center', dp(20))
+        cT.add_widget(T)
+        cS.add_widget(S)
+        cF.add_widget(F)
+        half_p.add_widget(P)
+        half_m.add_widget(M)
+        half_p.on_tap = lambda: self.app.change_font_live(1)
+        half_m.on_tap = lambda: self.app.change_font_live(-1)
+        pm = BoxLayout(size_hint_x=None, width=dp(40))
+        pm.add_widget(half_p)
+        pm.add_widget(half_m)
+        cW = cell('top', dp(60)) if W else None
+        if W:
+            cW.add_widget(W)
+            cW.on_tap = lambda: self._head_ref('words')
+
+        spW = Widget(size_hint_x=None, width=dp(60)) if W else None
+
+        def colw(*_):
+            rw = F.width + dp(12)
+            cF.width = rw
+            pm.width = rw
+            half_p.width = half_m.width = rw / 2.0
+            if W:
+                cW.width = W.width + dp(30)
+                spW.width = cW.width
             if read:
-                w1.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(v, L2.width) + dp(6)))
-                w2.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(L1.width, v) + dp(6)))
-        for ac in (d1, d2):
-            R1.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(v, R2.width) + dp(10)))
-            R2.bind(width=lambda w, v, a=ac: setattr(a, 'width', max(R1.width, v) + dp(10)))
-        for r, a_, b_ in ((row1, c1, d1), (row2, c2, d2)):
-            r.add_widget(a_)
-            if read:
-                r.add_widget(Widget())                       # распорка: правая колонка прижата к правому краю
-            r.add_widget(b_)
+                cT.width = cS.width = max(T.width, S.width) + dp(6)
+        T.bind(width=colw)
+        S.bind(width=colw)
+        F.bind(width=colw)
+
+        row1 = BoxLayout(size_hint_y=None, height=dp(30))
+        row2 = BoxLayout(size_hint_y=None, height=dp(30))
+        row1.add_widget(cT)
+        row2.add_widget(cS)
+        if W:
+            W.bind(width=colw)
+            row1.add_widget(cW)
+            row2.add_widget(spW)
+        else:
+            row1.add_widget(Widget())                          # распорка: правая колонка у правого края
+            row2.add_widget(Widget())
+        row1.add_widget(cF)
+        row2.add_widget(pm)
+
+        head = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(60))
 
         def fit(*_):
-            row1.height = max(L1.height, R1.height, dp(24))
-            row2.height = max(L2.height, R2.height, dp(24))
-            head.height = row1.height + row2.height + dp(6)
-        head = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(60), spacing=dp(2))
+            row1.height = max(T.height, F.height, W.height if W else 0, dp(24))
+            row2.height = max(S.height, P.height, dp(24))
+            head.height = row1.height + row2.height + dp(4)
         head.add_widget(row1)
         head.add_widget(row2)
-        for w in (L1, L2, R1, R2):
+        for w in (T, S, F, P, M) + ((W,) if W else ()):
             w.bind(height=fit)
         return head
 
