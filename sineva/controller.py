@@ -20,7 +20,7 @@ from .highlight import build_brief_view_mapped, get_intervals
 from .index import BookIndex
 from .library import Book, Library
 from .paths import AppPaths
-from .search import SearchOutcome, SearchService, escape_markup
+from .search import COLOR_LINK, SearchOutcome, SearchService, escape_markup
 from .vector import VectorRegistry, available_types
 
 
@@ -243,6 +243,7 @@ class Controller:
         self._start_search(self.query)
 
     def _start_search(self, text: str) -> None:
+        self.search.only.clear()
         self.reading = None
         self._token += 1
         token = self._token
@@ -305,21 +306,94 @@ class Controller:
         if outcome.errors and not outcome.results:
             self.on_status('; '.join(outcome.errors))
         else:
-            mode = '/'.join(sorted(outcome.modes)) or '—'
-            books = self.selected_books()
-            n = len(books)
-            where = (f"в книге {books[0].display}" if n == 1 else
-                     f"в {n} {self._plural(n, 'книге', 'книгах', 'книгах')}")
-            frag = len(outcome.word_counts) or len(outcome.fragments)
             self.search_ms = outcome.elapsed_ms
-            self.on_status(f"Поиск '{self.query.strip()}' {where}. Найдено {frag} "
-                           f"{self._plural(frag, 'фрагмент', 'фрагмента', 'фрагментов')} на {visible} "
-                           f"стр. за {outcome.elapsed_ms:.0f} мс "
-                           f"(индекс {outcome.index_ms:.0f} мс, {mode})"
-                           + (f" · {'; '.join(outcome.errors)}" if outcome.errors else ''))
+            self.restate()
 
     # ================= результаты =================
     WINDOW = 20             # сколько карточек одновременно держим на экране и в памяти
+
+    def short_status(self) -> bool:
+        return self.config.get_bool('short_status', True)
+
+    def search_msgs(self):
+        """(полный, краткий) статус результатов поиска."""
+        o = self.outcome
+        books = self.selected_books()
+        n = len(books)
+        where = (f"в книге {books[0].display}" if n == 1 else
+                 f"в {n} {self._plural(n, 'книге', 'книгах', 'книгах')}")
+        frag = len(o.word_counts) or len(o.fragments)
+        visible = len(self.search.visible(o))
+        head = f"Поиск '{self.query.strip()}' {where}. Найдено {frag} "
+        head += self._plural(frag, 'фрагмент', 'фрагмента', 'фрагментов')
+        mode = '/'.join(sorted(o.modes)) or '—'
+        full = (head + f" на {visible} стр. за {o.elapsed_ms:.0f} мс (индекс {o.index_ms:.0f} мс, {mode})"
+                + (f" · {'; '.join(o.errors)}" if o.errors else ''))
+        return full, head
+
+    def read_msgs(self):
+        res = self.outcome.results
+        if not (self.reading and res):
+            return None
+        book = self.library.find(self.reading['book'])
+        name = book.display if book else self.reading['book']
+        item = res[min(self.win_start, len(res) - 1)]
+        t = f"Выбрана книга {name}, стр. {item['ordinal']} из {self.reading['total']}"
+        return t, t
+
+    def say(self, pair) -> None:
+        full, short = pair
+        self.on_status(short if self.short_status() else full)
+
+    def restate(self) -> None:
+        """Статус текущей вкладки заново (после смены вкладки, настройки или фильтра)."""
+        if self.tab == 'read':
+            pair = self.read_msgs()
+            if pair:
+                self.say(pair)
+            return
+        o = self.outcome
+        if o.errors and not o.results:
+            self.on_status('; '.join(o.errors))
+        elif o.results or o.query:
+            self.say(self.search_msgs())
+        else:
+            self.selection_status()
+
+    # ---------- переход на страницу и фильтр по словам ----------
+    def page_info(self):
+        """(текущая стр., всего стр.) активной вкладки."""
+        if self.reading and self.outcome.results:
+            return self.outcome.results[self.win_start]['ordinal'], self.reading['total']
+        return self.win_start + 1, len(self._items())
+
+    def goto_page(self, n: int) -> None:
+        if self.reading:
+            book = self.library.find(self.reading['book'])
+            if book and 1 <= n <= self.reading['total']:
+                self.read_page(book, n)
+            return
+        items = self._items()
+        if 1 <= n <= len(items):
+            self.go(n - 1 - self.win_start)
+
+    def reset_filters(self) -> None:
+        """Фильтр по словам действует только в поиске и сбрасывается при переходе к другим функциям."""
+        if not self.search.only:
+            return
+        self.search.only.clear()
+        if self.tab == 'search':
+            self.win_start = 0
+        elif self._states.get('search'):
+            self._states['search']['win_start'] = 0
+        self.dirty.add('search')
+
+    def set_word_filter(self, words) -> None:
+        self.search.only = set(words)
+        self.win_start = 0
+        self.expanded.clear()
+        self._publish()
+        self.restate()
 
     def _items(self):
         return self.outcome.results if self.reading else self.search.visible(self.outcome)
@@ -382,6 +456,7 @@ class Controller:
         """Сброс вкладок «Поиск» и «Чтение» (смена шрифта/вида): ничего не перерисовывается, результаты
            очищаются — быстрее, чем перестраивать до 20 карточек. Поиск и чтение запускаются заново."""
         self._token += 1
+        self.search.only.clear()
         self._states.clear()
         self.outcome = SearchOutcome()
         self.shown = self.win_start = 0
@@ -986,8 +1061,6 @@ class Controller:
                 self.offsets, self.expanded = {}, set()
                 self.pending_append = None
                 self.on_cards([], 0, False)
-            if not self.outcome.results:
-                self.selection_status()
         if tab == 'read':
             books = self.selected_books()
             same = self.reading and len(books) == 1 and books[0].file_name == self.reading['book']
@@ -1001,6 +1074,7 @@ class Controller:
                 return
         if tab in self.dirty:
             self._publish()
+        self.restate()
 
     def _start_reading(self) -> None:
         books = self.selected_books()
@@ -1113,7 +1187,7 @@ class Controller:
         self.offsets.clear()
         self._reading_seen(book, rows[0])
         self._publish()
-        self.on_status(f"Выбрана книга {book.display}, стр. {base} из {total}")
+        self.say(self.read_msgs())
 
     def _reading_seen(self, book, row) -> None:
         """Прочитанным считается показанный блок: от него будет предложено продолжить."""
@@ -1167,7 +1241,7 @@ class Controller:
             self._reading_seen(book, (item['rowid'],))
             self.pending_append = None
             self._publish()
-            self.on_status(f"Выбрана книга {book.display}, стр. {item['ordinal']} из {self.reading['total']}")
+            self.say(self.read_msgs())
             self._prefetch_read(book)
             return
         items = self._items()
@@ -1212,6 +1286,8 @@ class Controller:
         self._publish()
 
     def word_rows(self) -> List[dict]:
+        if not self.outcome.word_counts and self.outcome.results:
+            self.outcome.word_counts = self.search._count_words(self.outcome.results)
         rows = self.search.panel_words(self.outcome)
         for r in rows:
             r['markup'] = self.search.word_markup(r)

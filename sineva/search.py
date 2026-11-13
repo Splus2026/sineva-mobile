@@ -33,11 +33,15 @@ class SearchOutcome:
     mode: str = 'text'
 
 
+COLOR_LINK = '2196F3'      # кликабельные слова и + − в шапках страниц
+
+
 class SearchService:
     def __init__(self, config, vectors: Optional[VectorRegistry] = None):
         self.config = config
         self.vectors = vectors or VectorRegistry()
         self.excluded: Set[str] = set()
+        self.only: Set[str] = set()            # фильтр «Слова»: показывать только страницы с этими словами
 
     def fill(self, items) -> None:
         """Подгружает текст и позицию топиков (поиск возвращает только оценки): нужно лишь для показанных."""
@@ -135,9 +139,12 @@ class SearchService:
 
     def visible(self, outcome: SearchOutcome) -> List[dict]:
         """Топик скрывается, только если все его совпавшие слова исключены."""
+        res = outcome.results
+        if self.only:
+            res = [it for it in res if any(w in self.only for w in it['meta']['matched_words'])]
         if not self.excluded:
-            return outcome.results
-        return [it for it in outcome.results
+            return res
+        return [it for it in res
                 if any(w not in self.excluded for w in it['meta']['matched_words'])]
 
     # ---------- панель «Совпадения» ----------
@@ -198,8 +205,8 @@ class SearchService:
 
     def header_markup(self, item: dict, number: int) -> str:
         meta = item['meta']
-        return (f"[b]{number}. {escape_markup(item.get('book_display', ''))}[/b]  "
-                f"[size=12sp][color=777777]ур. {meta['max_level']} · совп. {meta['count_at_max']}[/color][/size]")
+        return (f"[ref=page][b][color={COLOR_LINK}]{number}. {escape_markup(item.get('book_display', ''))}[/color][/b][/ref]  "
+                f"ур. {meta['max_level']} · [ref=words][b][color={COLOR_LINK}]Слова[/color][/b][/ref]")
 
     def word_markup(self, row: dict) -> str:
         label = escape_markup(row['word']) + f"  ({row['count']})"

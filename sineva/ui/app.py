@@ -21,6 +21,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.slider import Slider
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
 from kivy.uix.widget import Widget
@@ -28,7 +29,7 @@ from kivy.uix.textinput import TextInput
 
 from .. import __version__
 from ..controller import Controller
-from ..search import escape_markup
+from ..search import escape_markup, COLOR_LINK
 from .picker import add_home_shortcut, pick_files, publish_shared, share_file, save_to_downloads, is_android
 from . import textmodel
 from .splash import Splash
@@ -458,11 +459,13 @@ class SearchScreen(Screen):
                              'Введите слово и нажмите «Поиск». Книги выбираются на вкладке «Книги».', font_size=sp(13))
         self.status.color = GRAY
         self.status_sv = ScrollView(size_hint_y=None, bar_width=dp(3), do_scroll_x=False,
-                                    height=sp(13) * 1.3 * (2 if reading else 3) + dp(10))
+                                    height=sp(13) * 1.3 * (2 if (reading or self.ctl.short_status()) else 3) + dp(10))
         self.status_sv.add_widget(self.status)
         self.status_slot = BoxLayout(orientation='vertical', size_hint_y=None, height=max(self.status_sv.height, dp(37)))
         self._m = {'draw': [None, None], 'swap': [None, None]}      # [первый экран, вся страница], мс
         self._chars = None                                           # (знаков в первом куске, знаков всего)
+        self._sz = {'draw': [None, None], 'swap': [None, None]}      # размеры отрисовок, байт
+        self._nb = {}                                                # соседи: {-1|1: (мс, байт)}
         self._nav = None
         self.sv, self.box = vlist()
         self.sv.scroll_distance = dp(10)                 # прокрутка начинается позже, чем распознаётся направление жеста
@@ -590,9 +593,17 @@ class SearchScreen(Screen):
         card = self.ctl.peek(sign)
         if card is None:
             return None
+        t0 = time.time()
         pv, box = vlist()
         pv.size_hint, pv.pos_hint = (1, 1), {'x': float(sign), 'y': 0}
-        box.add_widget(self._card(card, None, None, peek=True))
+        w = self._card(card, None, None, peek=True)
+        box.add_widget(w)
+        ms = (time.time() - t0) * 1000
+
+        def measured(dt):
+            self._nb[sign] = (ms, self._tex_bytes(w))
+            self._show_status()
+        Clock.schedule_once(measured, 0.05)                   # текстуры появляются со следующего кадра
         return pv
 
     def _panel(self, sign):
@@ -718,6 +729,99 @@ class SearchScreen(Screen):
         self.status_slot.clear_widgets()
         self.status_slot.add_widget(self.actions if visible else self.status_sv)
 
+    # ---------- шапка страницы: переход и слова ----------
+    def _head_ref(self, ref):
+        if ref == 'page':
+            self._page_picker()
+        elif ref == 'words' and not self.reading_screen:
+            self._words_dialog()
+
+    def _page_picker(self):
+        cur, total = self.ctl.page_info()
+        if total < 2:
+            return
+        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        inp = TextInput(text=str(cur), multiline=False, input_filter='int', size_hint_x=0.3, font_size=sp(18), halign='center')
+        sl = Slider(min=1, max=total, value=cur, step=1, size_hint_y=None, height=dp(48))
+        line = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        line.add_widget(mlabel('Страница', color=(1, 1, 1, 1), font_size=sp(16)))
+        line.add_widget(inp)
+        line.add_widget(mlabel(f"из {total}", color=(1, 1, 1, 1), font_size=sp(16)))
+        box.add_widget(line)
+        box.add_widget(sl)
+        sync = {'busy': False}
+
+        def from_slider(w, v):
+            if not sync['busy']:
+                sync['busy'] = True
+                inp.text = str(int(v))
+                sync['busy'] = False
+
+        def from_text(w, v):
+            if not sync['busy'] and v.isdigit():
+                sync['busy'] = True
+                sl.value = max(1, min(total, int(v)))
+                sync['busy'] = False
+        sl.bind(value=from_slider)
+        inp.bind(text=from_text)
+        pop = top_popup('Перейти на страницу', box, dp(250))
+
+        def go_page(*_a):
+            try:
+                n = int(inp.text or cur)
+            except ValueError:
+                n = cur
+            pop.dismiss()
+            self.ctl.goto_page(max(1, min(total, n)))
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        row.add_widget(btn('Перейти', go_page))
+        row.add_widget(btn('Отмена', lambda: pop.dismiss(), color=GRAY))
+        box.add_widget(row)
+        inp.bind(on_text_validate=go_page)
+        pop.open()
+
+    def _words_dialog(self):
+        rows = self.ctl.word_rows()
+        if not rows:
+            return
+        only = self.ctl.search.only
+        sel = {r['word'] for r in rows if r['word'] in only}
+        box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        box.add_widget(mlabel('Отметьте слова — останутся страницы только с ними', color=(1, 1, 1, 1), font_size=sp(14)))
+        listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+        listing.bind(minimum_height=listing.setter('height'))
+        for r in rows:
+            line = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
+            cb = CheckBox(size_hint_x=None, width=dp(44), active=r['word'] in sel)
+
+            def toggled(w, v, word=r['word']):
+                (sel.add if v else sel.discard)(word)
+            cb.bind(active=toggled)
+            lb = Label(text=f"{escape_markup(r['word'])} ({r['count']})", markup=True, halign='left', valign='middle',
+                       color=(1, 1, 1, 1), font_size=sp(16))
+            lb.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], v[1])))
+            line.add_widget(cb)
+            line.add_widget(lb)
+            listing.add_widget(line)
+        sv = ScrollView()
+        sv.add_widget(listing)
+        box.add_widget(sv)
+        pop = tall_popup('Слова', box)
+
+        def apply(*_a):
+            pop.dismiss()
+            if sel:
+                self.ctl.set_word_filter(sel)
+            else:
+                self.ctl.reset_filters()
+                self.ctl.restate()
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        row.add_widget(btn('Применить', apply))
+        row.add_widget(btn('Сбросить', lambda: (sel.clear(), apply()), color=GRAY))
+        row.add_widget(btn('Отмена', lambda: pop.dismiss(), color=GRAY))
+        box.add_widget(row)
+        pop.open()
+
     def search(self):
         self.input.focus = False
         self.ctl.submit_query(self.input.text)
@@ -726,25 +830,76 @@ class SearchScreen(Screen):
         self._base = text
         self._show_status()
 
+    def apply_status_mode(self):
+        """Высота окна статуса: сокращённый — 2 строки, полный — 3 (поиск) / 2 (чтение), везде с прокруткой."""
+        short = self.ctl.short_status()
+        lines = 2 if short else (2 if self.reading_screen else 3)
+        self.status_sv.height = sp(13) * 1.3 * lines + dp(10)
+        self.status_slot.height = max(self.status_sv.height, dp(37))
+        self._show_status()
+
+    @staticmethod
+    def _tex_bytes(widget):
+        """Размер текстур текста в виджете (RGBA, 4 байта на пиксель) — «размер отрисовки»."""
+        total = 0
+        try:
+            for w in widget.walk():
+                ts = getattr(w, 'texture_size', None)
+                if ts and isinstance(w, Label):
+                    total += int(ts[0]) * int(ts[1]) * 4
+        except Exception:
+            return None
+        return total
+
+    @staticmethod
+    def _fmt_sz(a, b=None):
+        """«120/340 Кб» (или Мб, если больше мегабайта); b=None — одно значение."""
+        vals = [v for v in (a, b) if v is not None]
+        if not vals:
+            return ''
+        big = max(vals) >= 1048576
+        f = (lambda v: f"{v / 1048576:.1f}") if big else (lambda v: f"{v / 1024:.0f}")
+        unit = 'Мб' if big else 'Кб'
+        if b is None:
+            return f"{f(a)} {unit}"
+        return f"{f(a) if a is not None else f(b)}/{f(b)} {unit}"
+
     def _show_status(self):
-        """Текст статуса: основное сообщение + время отрисовки/«своп» (только для сообщений о поиске и странице)."""
+        """Текст статуса: основное сообщение; в полном режиме — время (размер) отрисовки, «своп» и соседние страницы."""
         base, text = self._base, self._base
+        if self.ctl.short_status():
+            self.status.text = escape_markup(text)
+            self.status_sv.scroll_y = 1
+            return
+
         def pair(v):                                          # «первый экран/вся страница»; пока дорисовывается — «200/…»
             f, full = v
             return None if f is None and full is None else f"{(f if f is not None else full):.0f}/" + (f"{full:.0f}" if full is not None else '…')
+
+        def sz(kind):
+            f, full = self._sz[kind]
+            r = self._fmt_sz(f, full) if (f is not None or full is not None) else ''
+            return f" ({r})" if r else ''
         d, w = pair(self._m['draw']), pair(self._m['swap'])
         zn = f", {self._chars[0]}/{self._chars[1]} зн" if self._chars and (d or w) else ''
         if base.startswith('Поиск ') and not self.reading_screen:
             if d:
                 full = self._m['draw'][1]
-                text += f", отрисовка {d} мс{zn}" + (f". Итого {self.ctl.search_ms + full:.0f} мс" if full is not None else '')
+                text += f", отрисовка {d} мс{sz('draw')}{zn}" + (f". Итого {self.ctl.search_ms + full:.0f} мс" if full is not None else '')
             if w and self._nav:
-                text += f" · своп {w} мс, стр. {self._nav['pos']} из {self._nav['total']}"
+                text += f" · своп {w} мс{sz('swap')}, стр. {self._nav['pos']} из {self._nav['total']}"
         elif ', стр. ' in base and self.reading_screen:
             if d:
-                text += f", отрисовка {d} мс{zn}"
+                text += f", отрисовка {d} мс{sz('draw')}{zn}"
             if w:
-                text += f", своп {w} мс"
+                text += f", своп {w} мс{sz('swap')}"
+        nb = []
+        for sign, name in ((-1, 'пред.'), (1, 'след.')):
+            v = self._nb.get(sign)
+            if v:
+                nb.append(f"{name} {v[0]:.0f} мс" + (f" ({self._fmt_sz(v[1])})" if v[1] is not None else ''))
+        if nb and (d or w):
+            text += ". Соседи: " + ', '.join(nb)
         self.status.text = escape_markup(text)
         self.status_sv.scroll_y = 1
 
@@ -772,8 +927,10 @@ class SearchScreen(Screen):
         if keys != self._keys and cards:                      # замер: первая отрисовка — «отрисовка», при листании — «своп»
             self._pending_kind = 'swap' if direction else 'draw'
             self._m['swap'] = [None, None]
+            self._sz['swap'] = [None, None]
             if not direction:
                 self._m['draw'] = [None, None]
+                self._sz['draw'] = [None, None]
         ghost = self._snapshot() if direction and not swiped else None
         self.update_nav(nav)
 
@@ -806,9 +963,18 @@ class SearchScreen(Screen):
                     self._m[kind][0] = built
                 self._show_status()
 
+                def measure(dt):
+                    if tok == self._tok:
+                        self._sz[kind][1] = self._tex_bytes(self.box)
+                        if self._sz[kind][0] is None:
+                            self._sz[kind][0] = self._sz[kind][1]
+                        self._show_status()
+                Clock.schedule_once(measure, 0.05)
+
         def first_frame(dt):                                  # первый экран: первый кусок построен и показан кадром
             if tok == self._tok and kind and self._m[kind][0] is None:
                 self._m[kind][0] = (time.time() - t0) * 1000
+                self._sz[kind][0] = self._tex_bytes(self.box)
                 self._show_status()
         c0 = cards[0]['chunks'][0]
         self._chars = (c0[1] - c0[0], len(cards[0]['text']))
@@ -822,6 +988,7 @@ class SearchScreen(Screen):
             self.turn(direction, ghost)
         self._peek_gen += 1                                   # прежние заготовки соседей устарели (другая страница или шрифт)
         self._pre = {}
+        self._nb = {}
         gen = self._peek_gen
         Clock.schedule_once(lambda dt: self._prepare_panels(gen), 0.7)
 
@@ -866,9 +1033,11 @@ class SearchScreen(Screen):
     def _card(self, c, tok=None, on_done=None, peek=False):
         box = BoxLayout(orientation='vertical', size_hint_y=None, padding=dp(8), spacing=dp(2))
         box.bind(minimum_height=box.setter('height'))
-        left = mlabel(c['header'], font_size=sp(14), color=ACCENT)
         fs = self.ctl.config.get_int('font_size', 16)
-        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b] + [/b][/size][/ref][ref=down][size=35sp][b] − [/b][/size][/ref]",
+        left = mlabel(c['header'], font_size=sp(fs), color=ACCENT)        # тот же шрифт, что и справа
+        left.bind(on_ref_press=lambda w, ref: self._head_ref(ref))
+        right = Label(text=f"[b]Шрифт: {fs}[/b] [ref=up][size=35sp][b][color={COLOR_LINK}] + [/color][/b][/size][/ref]"
+                           f"[ref=down][size=35sp][b][color={COLOR_LINK}] − [/color][/b][/size][/ref]",
                       markup=True, color=ACCENT, font_size=sp(fs), halign='right', valign='middle',
                       size_hint=(None, 1), width=dp(150 + max(0, fs - 16) * 6))
         right.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))      # высота текста своя: иначе высота строки растёт бесконечно
@@ -1309,6 +1478,9 @@ class SettingsScreen(Screen):
         sw.add_widget(btn('−', lambda: self.swap_floor(-50), size_hint_x=None, width=dp(60)))
         sw.add_widget(btn('+', lambda: self.swap_floor(50), size_hint_x=None, width=dp(60)))
         self.set_box.add_widget(sw)
+        self.set_box.add_widget(mlabel('Статус'))
+        self.set_box.add_widget(segmented(
+            [('Сокращённый', 1), ('Полный', 0)], 1 if self.ctl.short_status() else 0, self.set_short_status))
         self.set_box.add_widget(mlabel('Индексация'))
         self.set_box.add_widget(segmented(
             [('Ручная', 0), ('Автоматическая', 1)], 1 if self.ctl.auto_index_on() else 0,
@@ -1338,6 +1510,12 @@ class SettingsScreen(Screen):
         self._step_label.text = f"Шрифт отметок: +{v}"
         self.ctl.reset_views()
         self.ctl.on_status('Шаг шрифта изменён: повторите поиск или откройте «Чтение»')
+
+    def set_short_status(self, v):
+        self.ctl.set_setting('short_status', int(v))
+        for scr in (self.app.search_s, self.app.read_s):
+            scr.apply_status_mode()
+        self.ctl.restate()
 
     def swap_floor(self, delta):
         v = min(1000, max(0, self.ctl.swap_min_ms() + delta))
@@ -1691,6 +1869,8 @@ class SinevaApp(App):
         pop.open()
 
     def go_tab(self, name):
+        if name != 'search':
+            self.ctl.reset_filters()                        # фильтр по словам живёт только внутри поиска
         if self.sm.current != name:
             self._prev_tab = self.sm.current if self.sm.current != 'read' else getattr(self, '_prev_tab', 'search')
         self.sm.current = name                              # экран открывается сразу,

@@ -51,13 +51,13 @@ class Splash(Widget):
         self.logo.size = (side, side)
         self.logo.pos = (self.x + (w - side) / 2, self.y + h * 0.52)
         self.wait.size = (w, sp(30))
-        self.wait.pos = (self.x, self.y + h * 0.1)
+        self.wait.pos = (self.x, self.y + (h - sp(30)) / 2)         # по центру экрана по высоте
 
     def _tick(self, dt):
         self.t += min(dt, 0.1)
         t = self.t
         self.wait.text = 'Загрузка' + '.' * (1 + int(t / 0.45) % 3)      # точки добавляются: . .. ...
-        self.wait.opacity = 1.0 if t < 0.6 else 0.0              # слово начало собираться — надпись не нужна
+        self.wait.opacity = 1.0 if t < 0.3 else 0.0              # анимация заставки началась — надпись не нужна
         self.logo_color.a = min(1.0, max(0.0, (t - 0.3) / 1.6))      # круг проявляется вместе со словом
         size0 = self.cell / self.smoke.sub
         for i, (col, rect) in enumerate(self.dots):
