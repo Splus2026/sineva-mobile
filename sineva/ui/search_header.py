@@ -1,6 +1,5 @@
 """Шапка страницы: «Страница N / Слова / Шрифт», переход на страницу, список слов."""
-from kivy.metrics import dp
-from kivy.metrics import sp
+from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
@@ -8,13 +7,8 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
 from kivy.uix.widget import Widget
 from kivy.uix.textinput import TextInput
-from ..search import escape_markup
-from ..search import COLOR_LINK
-from .widgets import TapCell
-from .widgets import btn
-from .widgets import mlabel
-from .widgets import tall_popup
-from .widgets import top_popup
+from ..search import escape_markup, COLOR_LINK
+from .widgets import TapCell, btn, mlabel, tall_popup, top_popup
 from .theme import register
 
 register(globals())

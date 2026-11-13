@@ -2,8 +2,7 @@
 import time
 from kivy.clock import Clock
 from kivy.graphics import Color
-from kivy.metrics import dp
-from kivy.metrics import sp
+from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout

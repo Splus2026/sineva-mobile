@@ -2,13 +2,8 @@
 import math
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics import Color
-from kivy.graphics import PopMatrix
-from kivy.graphics import PushMatrix
-from kivy.graphics import Rectangle
-from kivy.graphics import Translate
-from kivy.metrics import dp
-from kivy.metrics import sp
+from kivy.graphics import Color, PopMatrix, PushMatrix, Rectangle, Translate
+from kivy.metrics import dp, sp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button

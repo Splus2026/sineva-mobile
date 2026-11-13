@@ -3,8 +3,7 @@ import math
 import time
 from kivy.animation import Animation
 from kivy.clock import Clock
-from kivy.graphics import Color
-from kivy.graphics import Rectangle
+from kivy.graphics import Color, Rectangle
 from kivy.metrics import dp
 from kivy.uix.widget import Widget
 from .widgets import vlist
@@ -167,9 +166,6 @@ class GestureMixin:
         self.track.tx = 0
         if pv is not None and pv.parent is not None:
             self.track.remove_widget(pv)
-
-    def refresh_card(self, key):
-        """Слои карточки перерисовываются через refresh_layers."""
 
     def destroy(self):
         pass

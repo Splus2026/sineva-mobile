@@ -4,7 +4,7 @@
 Поэтому текст режется на «атомы» — отрезки с одинаковым стилем; каждый стилизованный атом оборачивается в [ref=N].
 В режиме выделения все слова — отдельные атомы, чтобы по касанию находить слово под пальцем."""
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from ..search import escape_markup
 

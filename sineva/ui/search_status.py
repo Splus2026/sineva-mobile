@@ -1,6 +1,5 @@
 """Окно статуса: сообщения, время и размеры отрисовок."""
-from kivy.metrics import dp
-from kivy.metrics import sp
+from kivy.metrics import dp, sp
 from kivy.uix.label import Label
 from ..search import escape_markup
 

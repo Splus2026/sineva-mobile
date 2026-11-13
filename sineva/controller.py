@@ -466,14 +466,6 @@ class Controller(MarksMixin, ExportMixin, ReadingMixin, SyncMixin):
         self.on_undo(0)
         self.on_reset()
 
-    def _release(self, items) -> None:
-        """Выгрузка из памяти карточек, ушедших за пределы окна."""
-        for it in items:
-            key = f"{it['book']}:{it['rowid']}"
-            self.expanded.discard(key)
-            self.offsets.pop(key, None)
-            it['content'] = None
-
     MAX_CHARS = 1800          # длиннее — показываем окном: огромная текстура на телефоне даёт чёрные прямоугольники и тормоза
 
     def _view(self, key: str, item: dict, brief: bool):

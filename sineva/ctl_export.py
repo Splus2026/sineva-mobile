@@ -3,8 +3,7 @@ import os
 import shutil
 import time
 from typing import Optional
-from . import marks as marks_mod
-from . import notes
+from . import marks as marks_mod, notes
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
 

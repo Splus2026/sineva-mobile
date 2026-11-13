@@ -1,5 +1,4 @@
 """Поиск по выбранным книгам, панель «Совпадения» (исключение слов) и разметка текста для показа."""
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple

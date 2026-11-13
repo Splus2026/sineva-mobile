@@ -1,7 +1,6 @@
 """Экран «Книги»."""
 from kivy.clock import Clock
-from kivy.metrics import dp
-from kivy.metrics import sp
+from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.progressbar import ProgressBar

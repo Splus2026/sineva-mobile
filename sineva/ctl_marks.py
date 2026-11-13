@@ -1,8 +1,7 @@
 """Выделение: подчёркивание, «+Шрифт», «+Цвет», мысли и конспект."""
 import os
 from typing import Optional
-from . import marks as marks_mod
-from . import notes
+from . import marks as marks_mod, notes
 
 
 class MarksMixin:
