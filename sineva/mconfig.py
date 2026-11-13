@@ -59,3 +59,65 @@ def strip(text: str) -> str:
     """Текст без служебной первой строки mconfig (в поиске и чтении её быть не должно)."""
     head, sep, rest = text.lstrip('﻿').partition('\n')
     return rest if _LINE.match(head.strip()) else text
+
+
+def format_line(file_name: str, display: str, separator: str) -> str:
+    clean = lambda t: t.replace('"', '').replace('\n', ' ').strip()
+    return f'mconfig="{clean(file_name)} = {clean(display)}, {clean(separator)}"'
+
+
+def write(path: str, display: str, separator: str) -> None:
+    """Записывает (или заменяет) строку mconfig первой строкой книги: .txt — первой строкой файла,
+       .docx — первым абзацем. Остальной текст не меняется."""
+    line = format_line(os.path.basename(path), display, separator)
+    if os.path.splitext(path)[1].lower() == '.docx':
+        _write_docx(path, line)
+    else:
+        _write_txt(path, line)
+
+
+def _atomic(path: str, data: bytes) -> None:
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def _write_txt(path: str, line: str) -> None:
+    with open(path, 'rb') as f:
+        raw = f.read()
+    bom = raw.startswith(b'\xef\xbb\xbf')
+    text = decode_text(raw)
+    eol = '\r\n' if '\r\n' in text[:4096] else '\n'
+    head, _sep, rest = text.partition('\n')
+    body = rest if _LINE.match(head.strip()) else text          # старая строка mconfig заменяется
+    out = (line + eol + body).encode('utf-8')
+    _atomic(path, (b'\xef\xbb\xbf' if bom else b'') + out)
+
+
+def _write_docx(path: str, line: str) -> None:
+    import zipfile
+    from xml.sax.saxutils import escape
+    with zipfile.ZipFile(path) as z:
+        xml = z.read('word/document.xml').decode('utf-8')
+        infos = [(i, z.read(i.filename)) for i in z.infolist()]
+    m_body = re.search(r'<w:body[^>]*>', xml)
+    if not m_body:
+        raise ValueError("в .docx не найден <w:body>")
+    new_p = f'<w:p><w:r><w:t xml:space="preserve">{escape(line)}</w:t></w:r></w:p>'
+    start = m_body.end()
+    m_p = re.compile(r'<w:p\b[^>]*?/>|<w:p\b[^>]*>.*?</w:p>', re.S).match(xml, start)
+    if m_p:
+        text = ''.join(re.findall(r'<w:t[^>]*>([^<]*)</w:t>', m_p.group(0)))
+        if _LINE.match(text.strip().replace('&quot;', '"')):      # прежняя строка mconfig — заменяется
+            xml = xml[:start] + new_p + xml[m_p.end():]
+        else:
+            xml = xml[:start] + new_p + xml[start:]
+    else:
+        xml = xml[:start] + new_p + xml[start:]
+    tmp = path + '.tmp'
+    with zipfile.ZipFile(tmp, 'w') as out:
+        for info, data in infos:
+            out.writestr(info, xml.encode('utf-8') if info.filename == 'word/document.xml' else data,
+                         compress_type=info.compress_type)
+    os.replace(tmp, path)

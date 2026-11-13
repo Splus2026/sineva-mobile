@@ -397,6 +397,26 @@ try:
     ctl.add_books([wrong])
     b2 = ctl.library.find('Другая.txt')
     check('mconfig с чужим именем файла пропущен', b2.display == 'Другая' and 'не совпадает' in got['status'], f"{b2.display}|{got['status']}")
+    # запись mconfig в книгу из диалога «Книги»
+    b1 = ctl.library.find('Изида_1.txt'); ctl.edit_book('Изида_1.txt', 'Новая Изида', 'NS300')
+    check('запись настроек в книгу', ctl.write_book_config('Изида_1.txt'))
+    _first = open(ctl.library.find('Изида_1.txt').path, encoding='utf-8').read().split('\n')
+    check('первая строка заменена, текст цел', _first[0] == 'mconfig="Изида_1.txt = Новая Изида, NS300"' and _first[1] == '1 Текст книги.' and sum('mconfig' in l for l in _first) == 1, str(_first[:3]))
+    plain = os.path.join(tmp, 'Простая.txt'); open(plain, 'w', encoding='utf-8').write('1 Просто текст.\n')
+    ctl.add_books([plain]); ctl.edit_book('Простая.txt', 'Простая книга', 'N500'); ctl.write_book_config('Простая.txt')
+    check('строка добавлена перед текстом', open(ctl.library.find('Простая.txt').path, encoding='utf-8').read().startswith('mconfig="Простая.txt = Простая книга, N500"\n1 Просто текст.'))
+    import zipfile as _zf
+    dx = os.path.join(tmp, 'Док.docx')
+    with _zf.ZipFile(dx, 'w') as z:
+        z.writestr('[Content_Types].xml', '<Types/>')
+        z.writestr('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>1 Первый абзац</w:t></w:r></w:p><w:p><w:r><w:t>Второй</w:t></w:r></w:p></w:body></w:document>')
+    from sineva.textio import read_text_file as _rt
+    _mc.write(dx, 'Док', 'N1000')
+    _t1 = _rt(dx).split('\n')
+    _mc.write(dx, 'Док два', 'N500')
+    _t2 = _rt(dx).split('\n')
+    check('docx: строка добавлена первым абзацем', _t1[0] == 'mconfig="Док.docx = Док, N1000"' and _t1[1] == '1 Первый абзац' and len(_t1) == 3, str(_t1))
+    check('docx: повторная запись заменяет', _t2[0] == 'mconfig="Док.docx = Док два, N500"' and len(_t2) == 3 and _mc.read(dx)[0] == ('Док два', 'N500'), str(_t2))
 
     # обновление списков (кнопка ↻)
     with open(os.path.join(paths.books_dir, 'Новая.txt'), 'w', encoding='utf-8') as f:

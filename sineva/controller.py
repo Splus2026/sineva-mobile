@@ -220,6 +220,21 @@ class Controller(MarksMixin, ExportMixin, ReadingMixin, SyncMixin):
         elif note:
             self.on_status(f"{book.file_name}: {note}")
 
+    def write_book_config(self, file_name: str) -> bool:
+        """Записывает название и разделитель книги первой строкой самой книги (mconfig="файл = Название, N2000")."""
+        b = self.library.find(file_name)
+        if not b:
+            return False
+        try:
+            mconfig.write(b.path, b.display, b.separator)
+        except Exception as e:
+            self.on_status(f"Не удалось записать в книгу: {e}")
+            return False
+        self.library.scan()
+        self.publish_books()
+        self.on_status(f"Настройки записаны в первую строку книги {file_name}")
+        return True
+
     def remove_book(self, file_name: str, delete_file: bool = False) -> None:
         b = self.library.find(file_name)
         if b:

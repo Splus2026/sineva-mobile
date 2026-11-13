@@ -152,6 +152,19 @@ class BooksScreen(Screen):
             row.add_widget(w)
         return row
 
+    def _ask_write_config(self, file_name):
+        """После «Сохранить»: предложить записать название и разделитель первой строкой самой книги."""
+        box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+        box.add_widget(mlabel('Записать название и разделитель в первую строку книги?\n'
+                              '(mconfig="файл = Название, разделитель": при добавлении книги настройки подхватятся сами)',
+                              color=(1, 1, 1, 1), font_size=sp(14)))
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        pop = top_popup('Записать в книгу', box, dp(230))
+        row.add_widget(btn('Записать', lambda: (pop.dismiss(), self.ctl.write_book_config(file_name))))
+        row.add_widget(btn('Не надо', pop.dismiss, color=GRAY))
+        box.add_widget(row)
+        pop.open()
+
     def edit(self, r):
         """Название и разделитель — два поля; «Отмена» просто закрывает окно без изменений."""
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6), dp(8), dp(6)))
@@ -169,6 +182,8 @@ class BooksScreen(Screen):
             self.ctl.edit_book(r['file_name'], name.text.strip() or r['display'], new_sep)
             if new_sep != r['separator']:                      # индекс зависит только от разделителя
                 self.ctl.maybe_index([r['file_name']])
+            self._ask_write_config(r['file_name'])
+
         row.add_widget(btn('Сохранить', save))
         row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
         for w in (name, sep, row):
