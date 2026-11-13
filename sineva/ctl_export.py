@@ -4,6 +4,7 @@ import shutil
 import time
 from typing import Optional
 from . import marks as marks_mod, notes
+from . import mconfig
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
 
@@ -154,7 +155,7 @@ class ExportMixin:
         if book is None:
             return ''
         try:
-            sections = split_into_sections_by_separator(read_text_file(book.path).splitlines(), book.separator)
+            sections = split_into_sections_by_separator(mconfig.strip(read_text_file(book.path)).splitlines(), book.separator)
         except Exception as e:
             return f"(не удалось прочитать: {e})"
         if not sections:

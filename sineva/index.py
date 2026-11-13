@@ -17,6 +17,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .queryparser import get_fragments_with_levels
+from . import mconfig
 from .splitter import split_into_sections_by_separator
 from .textio import read_text_file
 
@@ -35,7 +36,7 @@ def build_index(source_path: str, index_path: str, separator: str,
                 progress: Optional[Callable[[int, int], None]] = None) -> int:
     """Читает книгу, режет на топики и записывает индекс. Пишет во временный файл и заменяет им старый —
        прерванная индексация не оставляет испорченного индекса. Возвращает число топиков."""
-    text = read_text_file(source_path)
+    text = mconfig.strip(read_text_file(source_path))        # служебная первая строка mconfig в индекс не попадает
     if not text.strip():
         raise ValueError("файл пуст или в нём нет текста")
     sections = split_into_sections_by_separator(text.splitlines(keepends=False), separator)

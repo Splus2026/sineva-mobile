@@ -53,3 +53,9 @@ def read(path: str) -> Tuple[Optional[Tuple[str, str]], str]:
     if name.casefold() != actual.casefold():
         return None, f"имя файла в mconfig ({name}) не совпадает с именем книги ({actual}) — строка пропущена"
     return (display, sep), ''
+
+
+def strip(text: str) -> str:
+    """Текст без служебной первой строки mconfig (в поиске и чтении её быть не должно)."""
+    head, sep, rest = text.lstrip('﻿').partition('\n')
+    return rest if _LINE.match(head.strip()) else text
