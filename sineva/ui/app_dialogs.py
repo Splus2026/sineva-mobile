@@ -204,6 +204,19 @@ class DialogsMixin:
             b2.add_widget(line)
             r2 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
             p2 = top_popup('Перейти на страницу', b2, dp(190))
+            # диалог уже вверху: окно не сдвигаем клавиатурой (иначе диалог уезжает за верх экрана)
+            old_mode = getattr(Window, 'softinput_mode', 'below_target')
+            try:
+                Window.softinput_mode = ''
+            except Exception:
+                pass
+
+            def restore_mode(*_a):
+                try:
+                    Window.softinput_mode = old_mode or 'below_target'
+                except Exception:
+                    pass
+            p2.bind(on_dismiss=restore_mode)
 
             def go_page(*_a):
                 try:
@@ -266,7 +279,7 @@ class DialogsMixin:
                 show_last()
 
         row.add_widget(btn('Добавить', add))
-        row.add_widget(btn('CTR+V', paste, color=GRAY))
+        row.add_widget(btn('Вставить', paste, color=GRAY))
         row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (spin, last, row, text):                   # кнопки между окнами — клавиатура их не закроет
             box.add_widget(w)
@@ -324,7 +337,9 @@ class DialogsMixin:
                           ('Мои мысли', self.ctl.export_notes),
                           ('Книги', None)):
             if fn is None:                                     # книги выбираются птичками в отдельном списке
-                grid.add_widget(btn(label, lambda: self._pick_books(lambda names: do(lambda: self.ctl.export_books(names)))))
+                # список книг открываем вместо окна «Экспорт» (а не поверх него), затем возвращаем «Экспорт»
+                grid.add_widget(btn(label, lambda: (pop.dismiss(), self._pick_books(
+                    self._export_books_reopen, back=self.open_export))))
             else:
                 grid.add_widget(btn(label, lambda fn=fn: do(fn)))
         box.add_widget(grid)
@@ -337,11 +352,24 @@ class DialogsMixin:
         fill()
         pop.open()
 
-    def _pick_books(self, on_pick):
+    def _export_books_reopen(self, names):
+        """Экспорт выбранных книг и возврат в окно «Экспорт»."""
+        path = self.ctl.export_books(names) if names else None
+        self.open_export()
+        if path:
+            try:
+                shown = publish_shared(path)[1]
+                self.ctl.on_status(f"Сохранено: {shown}  (внутренняя копия: {path})")
+            except Exception:
+                self.ctl.on_status(f"Сохранено: {path}")
+
+    def _pick_books(self, on_pick, back=None):
         """Список добавленных книг с птичками (и «Выбрать все»); «Экспортировать» отдаёт отмеченные file_name."""
         rows = self.ctl.library.books
         if not rows:
-            self.ctl.on_status("Книг пока нет")
+            self.ctl.on_status("Книги пока нет")
+            if back:
+                back()
             return
         sel, guard, cbs = set(), {'on': False}, []
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
@@ -384,7 +412,7 @@ class DialogsMixin:
         pop = tall_popup('Книги', box)
         row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
         row.add_widget(btn('Экспортировать', lambda: (pop.dismiss(), on_pick([b.file_name for b in rows if b.file_name in sel]))))
-        row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+        row.add_widget(btn('Отмена', lambda: (pop.dismiss(), back and back()), color=GRAY))
         box.add_widget(row)
         pop.open()
 
@@ -410,7 +438,7 @@ class DialogsMixin:
                 show_tail()
 
         row.add_widget(btn('Записать', add))
-        row.add_widget(btn('CTR+V', paste, color=GRAY))
+        row.add_widget(btn('Вставить', paste, color=GRAY))
         row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (last, row, text):
             box.add_widget(w)
