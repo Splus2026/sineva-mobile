@@ -329,7 +329,7 @@ class DialogsMixin:
                     self.ctl.on_status(f"Сохранено: {path}")
 
         box.add_widget(mlabel('Что экспортировать:', color=(1, 1, 1, 1)))
-        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(6 * 46), spacing=dp(6))
+        grid = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(6 * 46 + 5 * 6), spacing=dp(6))
         for label, fn in (('Подчёркнутое (TXT)', lambda: self.ctl.export_marks('txt')),
                           ('Подчёркнутое (Word, DOCX)', lambda: self.ctl.export_marks('docx')),
                           ('Конспект', self.ctl.export_conspect),
