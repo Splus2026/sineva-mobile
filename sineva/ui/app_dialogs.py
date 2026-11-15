@@ -12,7 +12,7 @@ from kivy.uix.progressbar import ProgressBar
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
-from .. import __version__
+from .. import __version__, __build_date__
 from ..search import escape_markup
 from .picker import publish_shared, share_file
 from .widgets import ReadBox, ShareIcon, btn, mlabel, no_bubble, style_popup, tall_popup, top_popup
@@ -29,7 +29,7 @@ class DialogsMixin:
         sizes = self.ctl.folder_sizes()
         mb = lambda n: f"{n / 1048576:.1f}".replace('.', ',') + ' МБ'
         box.add_widget(Label(
-            text=(f"Синева Mobile {__version__}\n\nПапка книг: {mb(sizes['books'])}\n{self.ctl.paths.books_dir}\n\n"
+            text=(f"Синева Mobile {__version__}\nДата сборки: {__build_date__}\n\nПапка книг: {mb(sizes['books'])}\n{self.ctl.paths.books_dir}\n\n"
                   f"Папка индексов: {mb(sizes['index'])}\n{self.ctl.paths.index_dir}\n\n"
                   f"Конфигурация:\n{self.ctl.paths.config_path}"),
             font_size=sp(14), halign='left', valign='top', color=(1, 1, 1, 1),
