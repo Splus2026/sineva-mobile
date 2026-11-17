@@ -25,8 +25,8 @@ class BooksScreen(Screen):
         bar.add_widget(btn('Индексировать', self.index_needed, color=GRAY))
         root.add_widget(bar)
         bar2 = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
-        bar2.add_widget(btn('Дополнить дневник/книгу', self.app.open_add_text))
-        bar2.add_widget(btn('Удалить книги', self.app.open_delete_books, color=GRAY))
+        bar2.add_widget(btn('Дополнить дневник/книгу', self.app.open_add_text, size_hint_x=0.64, font_size=sp(14)))
+        bar2.add_widget(btn('Удалить книги', self.app.open_delete_books, color=GRAY, size_hint_x=0.36, font_size=sp(14)))
         root.add_widget(bar2)
         self.status = mlabel('', font_size=sp(13))
         self.status.color = ACCENT
