@@ -243,15 +243,25 @@ class DialogsMixin:
 
     # ---------- «Дополнение книги» ----------
     def open_append(self):
+        """Отдельное окно «Дополнение книги» (то же содержимое строится и внутри «Дополнить дневник/книгу»)."""
+        box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        pop = tall_popup('Дополнение книги', box)
+        show = self._build_append(box, pop)
+        if show is None:
+            return
+        pop.open()
+        show()
+
+    def _build_append(self, box, pop):
+        """Наполняет box интерфейсом дополнения книги; возвращает функцию первичного показа или None (нет книг)."""
         ctl = self.ctl
         books = ctl.library.books
         if not books:
             ctl.on_status('Сначала добавьте книги')
-            return
+            return None
         names = {f"{b.display} · {b.file_name}": b.file_name for b in books}
         remembered = ctl.append_target()
         first = next((k for k, v in names.items() if v == remembered), next(iter(names)))
-        box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
         spin = Spinner(text=first, values=list(names), size_hint_y=None, height=dp(40), font_size=sp(14),
                        background_normal='', background_color=BTN2, color=BTN2_TXT)
         last = ReadBox(to_end=False, size_hint_y=0.4, font_pt=ctl.config.get_int('font_size', 16))
@@ -259,7 +269,6 @@ class DialogsMixin:
                          size_hint_y=0.6, font_size=sp(ctl.config.get_int('font_size', 16)))
         no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = tall_popup('Дополнение книги', box)
 
         def show_last(*_):
             last.text = 'Загрузка…'
@@ -283,8 +292,7 @@ class DialogsMixin:
         row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (spin, last, row, text):                   # кнопки между окнами — клавиатура их не закроет
             box.add_widget(w)
-        pop.open()
-        show_last()
+        return show_last
 
     def open_export(self):
         """Окно «Экспорт» на весь экран: что экспортировать + список ранее экспортированных файлов."""
@@ -363,7 +371,8 @@ class DialogsMixin:
             except Exception:
                 self.ctl.on_status(f"Сохранено: {path}")
 
-    def _pick_books(self, on_pick, back=None):
+    def _pick_books(self, on_pick, back=None, hint='Отметьте книги для экспорта (один ZIP-файл):',
+                    ok_text='Экспортировать', title='Книги'):
         """Список добавленных книг с птичками (и «Выбрать все»); «Экспортировать» отдаёт отмеченные file_name."""
         rows = self.ctl.library.books
         if not rows:
@@ -373,7 +382,7 @@ class DialogsMixin:
             return
         sel, guard, cbs = set(), {'on': False}, []
         box = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
-        box.add_widget(mlabel('Отметьте книги для экспорта (один ZIP-файл):', color=(1, 1, 1, 1), font_size=sp(14)))
+        box.add_widget(mlabel(hint, color=(1, 1, 1, 1), font_size=sp(14)))
         listing = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
         listing.bind(minimum_height=listing.setter('height'))
 
@@ -409,22 +418,28 @@ class DialogsMixin:
         sv = ScrollView()
         sv.add_widget(listing)
         box.add_widget(sv)
-        pop = tall_popup('Книги', box)
+        pop = tall_popup(title, box)
         row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        row.add_widget(btn('Экспортировать', lambda: (pop.dismiss(), on_pick([b.file_name for b in rows if b.file_name in sel]))))
+        row.add_widget(btn(ok_text, lambda: (pop.dismiss(), on_pick([b.file_name for b in rows if b.file_name in sel]))))
         row.add_widget(btn('Отмена', lambda: (pop.dismiss(), back and back()), color=GRAY))
         box.add_widget(row)
         pop.open()
 
     def open_diary(self):
-        """Две части: сверху конец дневника (последние записи), снизу поле новой записи."""
+        """Отдельное окно «Дневник» (то же содержимое строится и внутри «Дополнить дневник/книгу»)."""
         box = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        pop = tall_popup('Дневник', box)
+        show = self._build_diary(box, pop)
+        pop.open()
+        show()
+
+    def _build_diary(self, box, pop):
+        """Две части: сверху конец дневника (последние записи), снизу поле новой записи."""
         last = ReadBox(to_end=True, size_hint_y=0.4, font_pt=self.ctl.config.get_int('font_size', 16))
         text = TextInput(hint_text='Запись добавится в конец файла dnev.txt', multiline=True,
                          size_hint_y=0.6, font_size=sp(self.ctl.config.get_int('font_size', 16)))
         no_bubble(text)
         row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        pop = tall_popup('Дневник', box)
 
         def show_tail(dt=None):
             last.text = self.ctl.diary_tail() or '(дневник пока пуст)'
@@ -442,5 +457,79 @@ class DialogsMixin:
         row.add_widget(btn('Выход', pop.dismiss, color=GRAY))
         for w in (last, row, text):
             box.add_widget(w)
+        return show_tail
+
+    # ---------- «Дополнить дневник/книгу» ----------
+    def open_add_text(self):
+        """Окно с выбором: сверху «Дневник» / «Книга» / «Выход»; пока не выбрано — внизу пустые окна и недоступные кнопки.
+           После выбора открывается обычный интерфейс дневника или дополнения книги, а верхний ряд становится
+           недоступным (виден только выбранный режим)."""
+        ctl = self.ctl
+        outer = BoxLayout(orientation='vertical', spacing=dp(4), padding=(dp(8), dp(6), dp(8), dp(6)))
+        pop = tall_popup('Дополнить дневник/книгу', outer)
+        top = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        body = BoxLayout(orientation='vertical', spacing=dp(4))
+        b_diary = btn('Дневник', lambda: choose('diary'))
+        b_book = btn('Книга', lambda: choose('book'))
+        b_exit = btn('Выход', pop.dismiss, color=GRAY)
+        for w in (b_diary, b_book, b_exit):
+            top.add_widget(w)
+        outer.add_widget(top)
+        outer.add_widget(body)
+
+        # заготовка: пустые окна и три недоступные кнопки посередине
+        last = ReadBox(to_end=True, size_hint_y=0.4, font_pt=ctl.config.get_int('font_size', 16))
+        text = TextInput(hint_text='Выберите вверху: «Дневник» или «Книга»', multiline=True, disabled=True,
+                         size_hint_y=0.6, font_size=sp(ctl.config.get_int('font_size', 16)))
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        for caption in ('Записать', 'Вставить', 'Выход'):
+            b = btn(caption, lambda: None, color=GRAY)
+            b.disabled = True
+            row.add_widget(b)
+        for w in (last, row, text):
+            body.add_widget(w)
+
+        def choose(mode):
+            show = None
+            holder = BoxLayout(orientation='vertical', spacing=dp(4))
+            if mode == 'diary':
+                show = self._build_diary(holder, pop)
+            else:
+                show = self._build_append(holder, pop)
+                if show is None:                      # книг нет — остаёмся на выборе
+                    return
+            body.clear_widgets()
+            body.add_widget(holder)
+            chosen, other = (b_diary, b_book) if mode == 'diary' else (b_book, b_diary)
+            for b in (b_diary, b_book, b_exit):
+                b.disabled = True
+            chosen.disabled_color = (1, 1, 1, 1)      # выбранный режим виден ярко, остальные приглушены
+            other.background_color = GRAY
+            b_exit.background_color = GRAY
+            show()
+        pop.choose = choose                           # для проверки в тестах
         pop.open()
-        show_tail()
+        return pop
+
+    # ---------- «Удалить книги» ----------
+    def open_delete_books(self):
+        """Список книг (с названиями) для удаления файлов из папки приложения — после подтверждения."""
+        def confirm(names):
+            if not names:
+                return
+            box = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
+            box.add_widget(Label(text=f'Удалить книги: {len(names)}?\nФайлы и их индексы будут удалены из папки приложения.',
+                                 font_size=sp(16), halign='center'))
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+            pop = top_popup('Удаление книг', box, dp(200))
+
+            def do():
+                pop.dismiss()
+                for n in names:
+                    self.ctl.remove_book(n, delete_file=True)
+                self.ctl.on_status(f'Удалено книг: {len(names)}')
+            row.add_widget(btn('Удалить', do))
+            row.add_widget(btn('Отмена', pop.dismiss, color=GRAY))
+            box.add_widget(row)
+            pop.open()
+        self._pick_books(confirm, hint='Отметьте книги для удаления из папки приложения:', ok_text='Удалить', title='Удалить книги')

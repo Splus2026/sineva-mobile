@@ -189,6 +189,13 @@ app2.open_diary(); app2.open_append()
 app2.search_s.update_nav({'pos': 2, 'total': 9, 'prev': True, 'next': True}); app2.search_s.update_nav(None)
 print('листание OK')
 
+# ---- «Дополнить дневник/книгу» и «Удалить книги»
+for mode in ('diary', 'book'):
+    ap = app2.open_add_text()
+    ap.choose(mode)
+app2.open_delete_books()
+print('add_text / delete_books OK')
+
 # ---- окно «Синхронизация»
 app2.sync_dialog('start', 'Идёт…')
 assert app2._sync_pop is not None and app2._sync_parts[2].disabled
